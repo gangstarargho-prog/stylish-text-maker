@@ -1,26 +1,124 @@
-name: stylish_text_maker
-description: Stylish Text, Symbols, Image to Text & Image Resizer App.
-publish_to: 'none'
-version: 1.0.0+1
+name: Build Stylish Text Maker
 
-environment:
-  sdk: '>=3.11.0 <4.0.0'
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
 
-dependencies:
-  flutter:
-    sdk: flutter
-  google_mlkit_text_recognition: ^1.0.3
-  image_picker: ^1.2.4
-  image: ^4.10.0
-  gal: ^3.0.1
-  share_plus: ^13.3.1
-  shared_preferences: ^2.5.6
-  url_launcher: ^6.3.3
+jobs:
+  build:
+    runs-on: ubuntu-latest
 
-dev_dependencies:
-  flutter_test:
-    sdk: flutter
-  flutter_lints: ^5.0.0
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-flutter:
-  uses-material-design: true
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Generate Android files & preserve custom code
+        run: |
+          mkdir -p /tmp/custom_backup
+          cp pubspec.yaml /tmp/custom_backup/pubspec.yaml
+          cp -r lib /tmp/custom_backup/lib
+          flutter create . --project-name stylish_text_maker --org com.stylishtextmaker.app --platforms android
+          cp /tmp/custom_backup/pubspec.yaml pubspec.yaml
+          rm -rf lib
+          cp -r /tmp/custom_backup/lib lib
+
+      - name: Configure AndroidManifest, minSdk, and ProGuard rules
+        run: |
+          cat << 'EOF' > android/app/proguard-rules.pro
+          -keep class com.google.mlkit.** { *; }
+          -dontwarn com.google.mlkit.**
+          EOF
+
+          python3 - << 'EOF'
+          import os, re
+
+          manifest_path = "android/app/src/main/AndroidManifest.xml"
+          with open(manifest_path, "r") as f:
+              m = f.read()
+
+          m = re.sub(r'android:label="[^"]*"', 'android:label="Stylish Text Maker"', m)
+
+          perms = (
+              '    <uses-permission android:name="android.permission.INTERNET" />\n'
+              '    <uses-permission android:name="android.permission.CAMERA" />\n'
+              '    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />\n'
+          )
+          if "android.permission.CAMERA" not in m:
+              m = m.replace("<application", perms + "    <application", 1)
+
+          queries = (
+              '    <queries>\n'
+              '        <intent>\n'
+              '            <action android:name="android.intent.action.VIEW" />\n'
+              '            <data android:scheme="https" />\n'
+              '        </intent>\n'
+              '    </queries>\n'
+          )
+          if 'android:scheme="https"' not in m:
+              m = m.replace("</manifest>", queries + "</manifest>")
+
+          with open(manifest_path, "w") as f:
+              f.write(m)
+
+          kts_path = "android/app/build.gradle.kts"
+          if os.path.exists(kts_path):
+              with open(kts_path, "r") as f:
+                  g = f.read()
+              g = g.replace("minSdk = flutter.minSdkVersion", "minSdk = 24")
+              if "proguard-rules.pro" not in g:
+                  g = g.replace(
+                      "release {",
+                      'release {\n            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")',
+                      1,
+                  )
+              with open(kts_path, "w") as f:
+                  f.write(g)
+
+          groovy_path = "android/app/build.gradle"
+          if os.path.exists(groovy_path):
+              with open(groovy_path, "r") as f:
+                  g = f.read()
+              g = g.replace("minSdkVersion flutter.minSdkVersion", "minSdkVersion 24")
+              if "proguard-rules.pro" not in g:
+                  g = g.replace(
+                      "release {",
+                      "release {\n            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'",
+                      1,
+                  )
+              with open(groovy_path, "w") as f:
+                  f.write(g)
+          EOF
+
+      - name: Get Flutter dependencies
+        run: flutter pub get
+
+      - name: Build Release APK (for testing on phone)
+        run: flutter build apk --release
+
+      - name: Build Release AAB (for Play Store check)
+        run: flutter build appbundle --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: stylish-text-maker-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Upload AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: stylish-text-maker-aab
+          path: build/app/outputs/bundle/release/app-release.aab
