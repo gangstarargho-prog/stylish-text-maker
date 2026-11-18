@@ -1,0 +1,100 @@
+name: Build Stylish Text Maker
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Generate Android files & preserve custom code
+        run: |
+          mkdir -p /tmp/custom_backup
+          cp pubspec.yaml /tmp/custom_backup/pubspec.yaml
+          cp -r lib /tmp/custom_backup/lib
+          flutter create . --project-name stylish_text_maker --org com.stylishtextmaker.app --platforms android
+          cp /tmp/custom_backup/pubspec.yaml pubspec.yaml
+          rm -rf lib
+          cp -r /tmp/custom_backup/lib lib
+
+      - name: Configure AndroidManifest and minSdk
+        run: |
+          python3 - << 'EOF'
+          import os, re
+
+          manifest_path = "android/app/src/main/AndroidManifest.xml"
+          with open(manifest_path, "r") as f:
+              m = f.read()
+
+          m = re.sub(r'android:label="[^"]*"', 'android:label="Stylish Text Maker"', m)
+
+          perms = (
+              '    <uses-permission android:name="android.permission.INTERNET" />\n'
+              '    <uses-permission android:name="android.permission.CAMERA" />\n'
+              '    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />\n'
+          )
+          if "android.permission.CAMERA" not in m:
+              m = m.replace("<application", perms + "    <application", 1)
+
+          queries = (
+              '    <queries>\n'
+              '        <intent>\n'
+              '            <action android:name="android.intent.action.VIEW" />\n'
+              '            <data android:scheme="https" />\n'
+              '        </intent>\n'
+              '    </queries>\n'
+          )
+          if 'android:scheme="https"' not in m:
+              m = m.replace("</manifest>", queries + "</manifest>")
+
+          with open(manifest_path, "w") as f:
+              f.write(m)
+
+          for gradle_path in ["android/app/build.gradle.kts", "android/app/build.gradle"]:
+              if os.path.exists(gradle_path):
+                  with open(gradle_path, "r") as f:
+                      g = f.read()
+                  g = g.replace("minSdk = flutter.minSdkVersion", "minSdk = 24")
+                  g = g.replace("minSdkVersion flutter.minSdkVersion", "minSdkVersion 24")
+                  with open(gradle_path, "w") as f:
+                      f.write(g)
+          EOF
+
+      - name: Get Flutter dependencies
+        run: flutter pub get
+
+      - name: Build Release APK (for testing on phone)
+        run: flutter build apk --release
+
+      - name: Build Release AAB (for Play Store check)
+        run: flutter build appbundle --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: stylish-text-maker-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Upload AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: stylish-text-maker-aab
+          path: build/app/outputs/bundle/release/app-release.aab
