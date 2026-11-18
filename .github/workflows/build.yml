@@ -35,8 +35,13 @@ jobs:
           rm -rf lib
           cp -r /tmp/custom_backup/lib lib
 
-      - name: Configure AndroidManifest and minSdk
+      - name: Configure AndroidManifest, minSdk, and Gradle
         run: |
+          cat << 'EOF' > android/app/proguard-rules.pro
+          -keep class com.google.mlkit.** { *; }
+          -dontwarn com.google.mlkit.**
+          EOF
+
           python3 - << 'EOF'
           import os, re
 
@@ -68,14 +73,40 @@ jobs:
           with open(manifest_path, "w") as f:
               f.write(m)
 
-          for gradle_path in ["android/app/build.gradle.kts", "android/app/build.gradle"]:
-              if os.path.exists(gradle_path):
-                  with open(gradle_path, "r") as f:
-                      g = f.read()
-                  g = g.replace("minSdk = flutter.minSdkVersion", "minSdk = 24")
-                  g = g.replace("minSdkVersion flutter.minSdkVersion", "minSdkVersion 24")
-                  with open(gradle_path, "w") as f:
-                      f.write(g)
+          kts_path = "android/app/build.gradle.kts"
+          if os.path.exists(kts_path):
+              with open(kts_path, "r") as f:
+                  g = f.read()
+              g = g.replace("minSdk = flutter.minSdkVersion", "minSdk = 24")
+              if "isMinifyEnabled" not in g:
+                  extra = (
+                      'signingConfig = signingConfigs.getByName("debug")\n'
+                      '            isMinifyEnabled = false\n'
+                      '            isShrinkResources = false\n'
+                      '            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")'
+                  )
+                  if 'signingConfig = signingConfigs.getByName("debug")' in g:
+                      g = g.replace('signingConfig = signingConfigs.getByName("debug")', extra, 1)
+                  else:
+                      g = g.replace("release {", "release {\n            " + extra, 1)
+              with open(kts_path, "w") as f:
+                  f.write(g)
+
+          groovy_path = "android/app/build.gradle"
+          if os.path.exists(groovy_path):
+              with open(groovy_path, "r") as f:
+                  g = f.read()
+              g = g.replace("minSdkVersion flutter.minSdkVersion", "minSdkVersion 24")
+              if "minifyEnabled" not in g:
+                  extra_g = (
+                      "release {\n"
+                      "            minifyEnabled false\n"
+                      "            shrinkResources false\n"
+                      "            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'"
+                  )
+                  g = g.replace("release {", extra_g, 1)
+              with open(groovy_path, "w") as f:
+                  f.write(g)
           EOF
 
       - name: Get Flutter dependencies
