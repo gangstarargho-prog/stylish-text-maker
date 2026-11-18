@@ -1,13 +1,15 @@
+import 'dart:convert';
 import 'dart:io';
-import 'dart:isolate';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:gal/gal.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -16,10 +18,77 @@ import 'package:url_launcher/url_launcher.dart';
 const String kWebsiteUrl = '';
 const String kAppName = 'Stylish Text Maker';
 
+// বাংলা অনলাইন OCR API কী (টেস্টিং-এর জন্য 'helloworld' দেওয়া আছে; প্লে স্টোরে ছাড়ার আগে ocr.space থেকে ফ্রি কী নিয়ে বসানো ভালো)
+const String kOcrSpaceApiKey = 'helloworld';
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const StylishTextMakerApp());
 }
+
+// ============================================================================
+// TOP-LEVEL FUNCTIONS FOR BACKGROUND COMPUTE (ISOLATE SAFE)
+// ============================================================================
+
+class _ResizeRequest {
+  final Uint8List bytes;
+  final int width;
+  final int height;
+  final bool asPng;
+  final int jpgQuality;
+
+  const _ResizeRequest({
+    required this.bytes,
+    required this.width,
+    required this.height,
+    required this.asPng,
+    required this.jpgQuality,
+  });
+}
+
+List<int>? _decodeDimensionsTopLevel(Uint8List bytes) {
+  final decoded = img.decodeImage(bytes);
+  if (decoded == null) return null;
+  return [decoded.width, decoded.height];
+}
+
+Uint8List? _runResizeTopLevel(_ResizeRequest req) {
+  final decoded = img.decodeImage(req.bytes);
+  if (decoded == null) return null;
+  final resized = img.copyResize(
+    decoded,
+    width: req.width,
+    height: req.height,
+    interpolation: img.Interpolation.linear,
+  );
+  if (req.asPng) {
+    return Uint8List.fromList(img.encodePng(resized));
+  }
+  return Uint8List.fromList(img.encodeJpg(resized, quality: req.jpgQuality));
+}
+
+Uint8List _prepareOcrImageTopLevel(Uint8List bytes) {
+  final decoded = img.decodeImage(bytes);
+  if (decoded == null) return bytes;
+  img.Image target = decoded;
+  const maxDim = 1600;
+  if (decoded.width > maxDim || decoded.height > maxDim) {
+    if (decoded.width >= decoded.height) {
+      target = img.copyResize(decoded, width: maxDim);
+    } else {
+      target = img.copyResize(decoded, height: maxDim);
+    }
+  }
+  var jpg = Uint8List.fromList(img.encodeJpg(target, quality: 85));
+  if (jpg.length > 900 * 1024) {
+    jpg = Uint8List.fromList(img.encodeJpg(target, quality: 65));
+  }
+  return jpg;
+}
+
+// ============================================================================
+// APP ROOT
+// ============================================================================
 
 class StylishTextMakerApp extends StatefulWidget {
   const StylishTextMakerApp({super.key});
@@ -453,7 +522,7 @@ class TextStyleEngine {
     );
     final boldSerif = _map(
       text,
-      '𝐀𝐁𝐂𝐃𝐄𝐅𝐆𝐇𝐈𝐉𝐊𝐋𝐌𝐍𝐎𝐏𝐐𝐑𝐒𝐓𝐔𝐕𝐖𝐗𝐘𝐙𝐚𝐛𝐜𝐝𝐞𝐟𝐠𝐡𝐢𝐣𝐤𝐥𝐦𝐧𝐨𝐩𝐪𝐫𝐬𝐭𝐮𝐯𝐰𝐱𝐲𝐳𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗',
+      '𝐀𝐁𝐂𝐃𝐄𝐅𝐆𝐇𝐈𝐉𝐊𝐋𝐌𝐍𝐎𝐏𝐐𝐑𝑺𝐓𝐔𝐕𝐖𝐗𝐘𝐙𝐚𝐛𝐜𝐝𝐞𝐟𝐠𝐡𝐢𝐣𝐤𝐥𝐦𝐧𝐨𝐩𝐪𝐫𝐬𝐭𝐮𝐯𝐰𝐱𝐲𝐳𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗',
     );
     final boldItalicSerif = _mapAlphaOnly(
       text,
@@ -625,7 +694,6 @@ class _SymbolsTabState extends State<SymbolsTab> {
 
     return Column(
       children: [
-        // Quick Symbol Builder Bar
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
           child: Row(
@@ -662,7 +730,6 @@ class _SymbolsTabState extends State<SymbolsTab> {
             ],
           ),
         ),
-        // Category Chips
         SizedBox(
           height: 46,
           child: ListView.separated(
@@ -731,7 +798,7 @@ class _SymbolsTabState extends State<SymbolsTab> {
 }
 
 // ============================================================================
-// TAB 3: IMAGE TO TEXT (OCR)
+// TAB 3: IMAGE TO TEXT (OFFLINE ENGLISH + ONLINE BANGLA)
 // ============================================================================
 
 class ImageToTextTab extends StatefulWidget {
@@ -751,6 +818,7 @@ class _ImageToTextTabState extends State<ImageToTextTab> {
 
   File? _selectedImage;
   bool _isProcessing = false;
+  bool _useOnlineBangla = false; // false = Offline English, true = Online Bangla
 
   @override
   void dispose() {
@@ -764,21 +832,43 @@ class _ImageToTextTabState extends State<ImageToTextTab> {
       final XFile? picked = await _picker.pickImage(source: source);
       if (picked == null) return;
 
+      final file = File(picked.path);
       setState(() {
-        _selectedImage = File(picked.path);
-        _isProcessing = true;
+        _selectedImage = file;
       });
 
-      final inputImage = InputImage.fromFilePath(picked.path);
-      final RecognizedText recognized =
-          await _textRecognizer.processImage(inputImage);
+      await _scanCurrentImage();
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isProcessing = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('ছবি নিতে সমস্যা হয়েছে: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _scanCurrentImage() async {
+    if (_selectedImage == null) return;
+    setState(() => _isProcessing = true);
+
+    try {
+      String extracted;
+      if (_useOnlineBangla) {
+        extracted = await _scanWithOnlineBangla(_selectedImage!);
+      } else {
+        final inputImage = InputImage.fromFilePath(_selectedImage!.path);
+        final RecognizedText recognized =
+            await _textRecognizer.processImage(inputImage);
+        extracted = recognized.text.trim();
+      }
 
       if (mounted) {
         setState(() {
-          _resultController.text = recognized.text.trim();
+          _resultController.text = extracted;
           _isProcessing = false;
         });
-        if (recognized.text.trim().isEmpty) {
+        if (extracted.isEmpty) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text('ছবিতে কোনো স্পষ্ট লেখা পাওয়া যায়নি।'),
@@ -790,9 +880,63 @@ class _ImageToTextTabState extends State<ImageToTextTab> {
       if (mounted) {
         setState(() => _isProcessing = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('সমস্যা হয়েছে: $e')),
+          SnackBar(content: Text('$e')),
         );
       }
+    }
+  }
+
+  Future<String> _scanWithOnlineBangla(File imageFile) async {
+    try {
+      final rawBytes = await imageFile.readAsBytes();
+      final uploadBytes = await compute(_prepareOcrImageTopLevel, rawBytes);
+
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('https://api.ocr.space/parse/image'),
+      );
+      request.headers['apikey'] = kOcrSpaceApiKey;
+      request.fields['OCREngine'] = '3';
+      request.fields['language'] = 'auto';
+      request.fields['scale'] = 'true';
+      request.fields['isOverlayRequired'] = 'false';
+      request.files.add(
+        http.MultipartFile.fromBytes(
+          'file',
+          uploadBytes,
+          filename: 'scan.jpg',
+        ),
+      );
+
+      final streamed = await request.send().timeout(const Duration(seconds: 45));
+      final response = await http.Response.fromStream(streamed);
+
+      if (response.statusCode != 200) {
+        throw Exception('সার্ভার রেসপন্স করেনি (${response.statusCode})।');
+      }
+
+      final Map<String, dynamic> data =
+          jsonDecode(response.body) as Map<String, dynamic>;
+
+      if (data['IsErroredOnProcessing'] == true) {
+        final errList = data['ErrorMessage'];
+        final errMsg = errList is List && errList.isNotEmpty
+            ? errList.join(', ')
+            : 'অনলাইন OCR-এ সমস্যা হয়েছে।';
+        throw Exception(errMsg);
+      }
+
+      final parsed = data['ParsedResults'] as List<dynamic>?;
+      if (parsed == null || parsed.isEmpty) return '';
+
+      return parsed
+          .map((item) => (item['ParsedText'] ?? '').toString())
+          .join('\n')
+          .trim();
+    } on SocketException {
+      throw Exception('ইন্টারনেট সংযোগ নেই! বাংলা OCR-এর জন্য নেট চালু করুন।');
+    } catch (e) {
+      rethrow;
     }
   }
 
@@ -810,10 +954,44 @@ class _ImageToTextTabState extends State<ImageToTextTab> {
               child: Column(
                 children: [
                   const Text(
-                    'ছবি থেকে লেখা (Text) বের করুন (অফলাইন)',
+                    'স্ক্যান মোড নির্বাচন করুন',
                     style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
                   ),
                   const SizedBox(height: 10),
+                  SegmentedButton<bool>(
+                    segments: const [
+                      ButtonSegment<bool>(
+                        value: false,
+                        icon: Icon(Icons.offline_bolt_outlined),
+                        label: Text('Offline (English)'),
+                      ),
+                      ButtonSegment<bool>(
+                        value: true,
+                        icon: Icon(Icons.cloud_outlined),
+                        label: Text('Online (বাংলা + Eng)'),
+                      ),
+                    ],
+                    selected: {_useOnlineBangla},
+                    onSelectionChanged: _isProcessing
+                        ? null
+                        : (Set<bool> selection) {
+                            setState(() {
+                              _useOnlineBangla = selection.first;
+                            });
+                            if (_selectedImage != null) {
+                              _scanCurrentImage();
+                            }
+                          },
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    _useOnlineBangla
+                        ? 'বাংলা ও ইংরেজি মিক্সড ছবির জন্য (ইন্টারনেট প্রয়োজন)'
+                        : 'শুধু ইংরেজি ছবির জন্য (ইন্টারনেট ছাড়াই চলবে)',
+                    style: Theme.of(context).textTheme.bodySmall,
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 12),
                   Row(
                     children: [
                       Expanded(
@@ -847,7 +1025,7 @@ class _ImageToTextTabState extends State<ImageToTextTab> {
               borderRadius: BorderRadius.circular(14),
               child: Image.file(
                 _selectedImage!,
-                height: 190,
+                height: 180,
                 width: double.infinity,
                 fit: BoxFit.contain,
               ),
@@ -856,13 +1034,20 @@ class _ImageToTextTabState extends State<ImageToTextTab> {
             const SizedBox(height: 20),
             const Center(child: CircularProgressIndicator()),
             const SizedBox(height: 8),
-            const Center(child: Text('ছবি স্ক্যান করা হচ্ছে...')),
+            Center(
+              child: Text(
+                _useOnlineBangla
+                    ? 'অনলাইনে বাংলা লেখা স্ক্যান হচ্ছে...'
+                    : 'অফলাইনে ইংরেজি লেখা স্ক্যান হচ্ছে...',
+              ),
+            ),
           ],
           const SizedBox(height: 14),
           TextField(
             controller: _resultController,
-            maxLines: 7,
+            maxLines: 8,
             minLines: 4,
+            onChanged: (_) => setState(() {}),
             decoration: InputDecoration(
               labelText: 'স্ক্যান করা লেখা (এডিট করতে পারবেন)',
               alignLabelWithHint: true,
@@ -907,45 +1092,8 @@ class _ImageToTextTabState extends State<ImageToTextTab> {
 }
 
 // ============================================================================
-// TAB 4: IMAGE RESIZE TOOL
+// TAB 4: IMAGE RESIZE TOOL (FIXED WITH TOP-LEVEL COMPUTE + PATH_PROVIDER)
 // ============================================================================
-
-class _ResizeRequest {
-  final Uint8List bytes;
-  final int width;
-  final int height;
-  final bool asPng;
-  final int jpgQuality;
-
-  const _ResizeRequest({
-    required this.bytes,
-    required this.width,
-    required this.height,
-    required this.asPng,
-    required this.jpgQuality,
-  });
-}
-
-Uint8List? _runResizeInIsolate(_ResizeRequest req) {
-  final decoded = img.decodeImage(req.bytes);
-  if (decoded == null) return null;
-  final resized = img.copyResize(
-    decoded,
-    width: req.width,
-    height: req.height,
-    interpolation: img.Interpolation.linear,
-  );
-  if (req.asPng) {
-    return Uint8List.fromList(img.encodePng(resized));
-  }
-  return Uint8List.fromList(img.encodeJpg(resized, quality: req.jpgQuality));
-}
-
-(int, int)? _decodeDimensionsInIsolate(Uint8List bytes) {
-  final decoded = img.decodeImage(bytes);
-  if (decoded == null) return null;
-  return (decoded.width, decoded.height);
-}
 
 class ImageResizeTab extends StatefulWidget {
   const ImageResizeTab({super.key});
@@ -995,10 +1143,10 @@ class _ImageResizeTabState extends State<ImageResizeTab> {
 
       setState(() => _isBusy = true);
       final bytes = await picked.readAsBytes();
-      final dims = await Isolate.run(() => _decodeDimensionsInIsolate(bytes));
+      final dims = await compute(_decodeDimensionsTopLevel, bytes);
 
       if (!mounted) return;
-      if (dims == null) {
+      if (dims == null || dims.length < 2) {
         setState(() => _isBusy = false);
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('ছবিটি পড়া সম্ভব হয়নি।')),
@@ -1008,8 +1156,8 @@ class _ImageResizeTabState extends State<ImageResizeTab> {
 
       setState(() {
         _originalBytes = bytes;
-        _origWidth = dims.$1;
-        _origHeight = dims.$2;
+        _origWidth = dims[0];
+        _origHeight = dims[1];
         _resizedBytes = null;
         _resizedTempPath = null;
         _updatingFields = true;
@@ -1092,14 +1240,15 @@ class _ImageResizeTabState extends State<ImageResizeTab> {
         asPng: _asPng,
         jpgQuality: _jpgQuality,
       );
-      final outBytes = await Isolate.run(() => _runResizeInIsolate(req));
+      final outBytes = await compute(_runResizeTopLevel, req);
       if (outBytes == null) {
         throw Exception('Resize failed');
       }
 
+      final tempDir = await getTemporaryDirectory();
       final ext = _asPng ? 'png' : 'jpg';
       final ts = DateTime.now().millisecondsSinceEpoch;
-      final tempPath = '${Directory.systemTemp.path}/resized_$ts.$ext';
+      final tempPath = '${tempDir.path}/resized_$ts.$ext';
       await File(tempPath).writeAsBytes(outBytes);
 
       if (mounted) {
@@ -1178,6 +1327,8 @@ class _ImageResizeTabState extends State<ImageResizeTab> {
           if (_isBusy) ...[
             const SizedBox(height: 20),
             const Center(child: CircularProgressIndicator()),
+            const SizedBox(height: 8),
+            const Center(child: Text('প্রসেস করা হচ্ছে...')),
           ],
           if (_originalBytes != null && !_isBusy) ...[
             const SizedBox(height: 12),
