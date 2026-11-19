@@ -73,11 +73,14 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> toggleFavorite(String text) async {
+    final clean = text.trim();
+    if (clean.isEmpty) return;
     final updated = List<String>.from(favorites);
-    if (updated.contains(text)) {
-      updated.remove(text);
+    if (updated.contains(clean)) {
+      updated.remove(clean);
     } else {
-      updated.insert(0, text);
+      updated.insert(0, clean);
+      if (updated.length > 100) updated.removeRange(100, updated.length);
     }
     favorites = updated;
     notifyListeners();
@@ -87,9 +90,10 @@ class AppController extends ChangeNotifier {
   Future<void> addToHistory(String text) async {
     final clean = text.trim();
     if (clean.isEmpty) return;
+    final safeText = clean.length > 2000 ? clean.substring(0, 2000) : clean;
     final updated = List<String>.from(history);
-    updated.remove(clean);
-    updated.insert(0, clean);
+    updated.remove(safeText);
+    updated.insert(0, safeText);
     if (updated.length > 40) {
       updated.removeRange(40, updated.length);
     }
@@ -337,12 +341,13 @@ class TextStyleEngine {
   }
 
   static String generateGlitch(String input, int intensity) {
+    final safe = input.length > 500 ? input.substring(0, 500) : input;
     const up = ['\u030d', '\u030e', '\u0304', '\u0305', '\u033f', '\u0311', '\u0306', '\u0310', '\u0352'];
     const mid = ['\u0315', '\u031b', '\u0340', '\u0341', '\u0358', '\u0321', '\u0322', '\u0335', '\u0336'];
     const down = ['\u0316', '\u0317', '\u0318', '\u0319', '\u031c', '\u031d', '\u0320', '\u0324', '\u0329'];
     final rnd = Random(42);
     final buf = StringBuffer();
-    for (final rune in input.runes) {
+    for (final rune in safe.runes) {
       final ch = String.fromCharCode(rune);
       buf.write(ch);
       if (ch.trim().isEmpty) continue;
@@ -488,4 +493,258 @@ class SymbolData {
       '───── ⋆⋅☆⋅⋆ ─────\n· · ─────── ·𖥸· ─────── · ·\n•°¯`••   ••´¯°•',
     ),
   ];
+}
+
+// ============================================================================
+// NEW FEATURE 1: EMOJI ART ENGINE
+// ============================================================================
+
+class EmojiArtEngine {
+  static const Map<String, List<String>> _glyphs = {
+    'A': ['01110', '10001', '11111', '10001', '10001'],
+    'B': ['11110', '10001', '11110', '10001', '11110'],
+    'C': ['01111', '10000', '10000', '10000', '01111'],
+    'D': ['11110', '10001', '10001', '10001', '11110'],
+    'E': ['11111', '10000', '11110', '10000', '11111'],
+    'F': ['11111', '10000', '11110', '10000', '10000'],
+    'G': ['01111', '10000', '10111', '10001', '01111'],
+    'H': ['10001', '10001', '11111', '10001', '10001'],
+    'I': ['11111', '00100', '00100', '00100', '11111'],
+    'J': ['00111', '00010', '00010', '10010', '01100'],
+    'K': ['10001', '10010', '11100', '10010', '10001'],
+    'L': ['10000', '10000', '10000', '10000', '11111'],
+    'M': ['10001', '11011', '10101', '10001', '10001'],
+    'N': ['10001', '11001', '10101', '10011', '10001'],
+    'O': ['01110', '10001', '10001', '10001', '01110'],
+    'P': ['11110', '10001', '11110', '10000', '10000'],
+    'Q': ['01110', '10001', '10101', '10010', '01101'],
+    'R': ['11110', '10001', '11110', '10010', '10001'],
+    'S': ['01111', '10000', '01110', '00001', '11110'],
+    'T': ['11111', '00100', '00100', '00100', '00100'],
+    'U': ['10001', '10001', '10001', '10001', '01110'],
+    'V': ['10001', '10001', '10001', '01010', '00100'],
+    'W': ['10001', '10001', '10101', '11011', '10001'],
+    'X': ['10001', '01010', '00100', '01010', '10001'],
+    'Y': ['10001', '01010', '00100', '00100', '00100'],
+    'Z': ['11111', '00010', '00100', '01000', '11111'],
+    '0': ['01110', '10011', '10101', '11001', '01110'],
+    '1': ['00100', '01100', '00100', '00100', '01110'],
+    '2': ['01110', '10001', '00110', '01000', '11111'],
+    '3': ['11110', '00001', '01110', '00001', '11110'],
+    '4': ['10010', '10010', '11111', '00010', '00010'],
+    '5': ['11111', '10000', '11110', '00001', '11110'],
+    '6': ['01110', '10000', '11110', '10001', '01110'],
+    '7': ['11111', '00010', '00100', '01000', '01000'],
+    '8': ['01110', '10001', '01110', '10001', '01110'],
+    '9': ['01110', '10001', '01111', '00001', '01110'],
+    '!': ['00100', '00100', '00100', '00000', '00100'],
+    '?': ['01110', '10001', '00110', '00000', '00100'],
+  };
+
+  static String generate({
+    required String text,
+    required String fgEmoji,
+    required String bgChar,
+    required bool vertical,
+  }) {
+    final clean = text.toUpperCase().trim();
+    if (clean.isEmpty) return '';
+    final limited = clean.length > 12 ? clean.substring(0, 12) : clean;
+
+    if (vertical) {
+      final blocks = <String>[];
+      for (final rune in limited.runes) {
+        final ch = String.fromCharCode(rune);
+        if (ch == ' ') {
+          blocks.add('');
+          continue;
+        }
+        final grid = _glyphs[ch];
+        if (grid == null) continue;
+        final lines = grid.map(
+          (row) => row.split('').map((c) => c == '1' ? fgEmoji : bgChar).join(),
+        );
+        blocks.add(lines.join('\n'));
+      }
+      return blocks.join('\n\n');
+    } else {
+      final grids = <List<String>>[];
+      for (final rune in limited.runes) {
+        final ch = String.fromCharCode(rune);
+        if (ch == ' ') {
+          grids.add(['00', '00', '00', '00', '00']);
+        } else if (_glyphs.containsKey(ch)) {
+          grids.add(_glyphs[ch]!);
+        }
+      }
+      if (grids.isEmpty) return '';
+      final rows = <String>[];
+      for (int r = 0; r < 5; r++) {
+        final rowStr = grids
+            .map((g) => g[r].split('').map((c) => c == '1' ? fgEmoji : bgChar).join())
+            .join(bgChar);
+        rows.add(rowStr);
+      }
+      return rows.join('\n');
+    }
+  }
+}
+
+// ============================================================================
+// NEW FEATURE 2: OFFLINE STUDY PARAGRAPH SUMMARIZER (ENGLISH + BANGLA)
+// ============================================================================
+
+class SummaryResult {
+  final String summaryText;
+  final int originalWords;
+  final int summaryWords;
+  final int originalSentences;
+  final int summarySentences;
+  final int reductionPercent;
+  final int readingMinutes;
+  final List<String> keywords;
+
+  const SummaryResult({
+    required this.summaryText,
+    required this.originalWords,
+    required this.summaryWords,
+    required this.originalSentences,
+    required this.summarySentences,
+    required this.reductionPercent,
+    required this.readingMinutes,
+    required this.keywords,
+  });
+}
+
+class ParagraphSummaryEngine {
+  static const Set<String> _stopWords = {
+    // English stopwords
+    'the', 'is', 'in', 'at', 'of', 'and', 'to', 'a', 'an', 'that', 'this',
+    'it', 'for', 'on', 'with', 'as', 'was', 'were', 'are', 'be', 'by', 'or',
+    'from', 'they', 'we', 'you', 'he', 'she', 'his', 'her', 'their', 'our',
+    'which', 'who', 'what', 'when', 'where', 'how', 'can', 'will', 'has',
+    'have', 'had', 'not', 'but', 'also', 'into', 'than', 'then', 'very',
+    'more', 'most', 'some', 'such', 'these', 'those', 'been', 'being',
+    // Bengali stopwords
+    'এবং', 'ও', 'আর', 'কিন্তু', 'তবে', 'কারণ', 'যে', 'যা', 'এই', 'সেই',
+    'একটি', 'কোনো', 'কোন', 'থেকে', 'দিয়ে', 'দিয়ে', 'করে', 'করা', 'হয়', 'হয়',
+    'হয়ে', 'হয়ে', 'হয়েছে', 'হয়েছে', 'ছিল', 'আছে', 'না', 'নয়', 'নয়', 'কি',
+    'কী', 'বা', 'জন্য', 'সাথে', 'মধ্যে', 'ওপর', 'পর', 'আগে', 'তার', 'তাদের',
+    'আমাদের', 'আমরা', 'তুমি', 'সে', 'তারা', 'যখন', 'তখন', 'এটি', 'তা', 'হলো',
+  };
+
+  static const Set<String> _cueWords = {
+    'important', 'conclusion', 'therefore', 'means', 'because', 'main', 'key',
+    'result', 'summary', 'defined', 'কারণ', 'সুতরাং', 'অর্থাৎ', 'মূলত', 'ফলে',
+    'গুরুত্বপূর্ণ', 'ফলাফল', 'বৈশিষ্ট্য', 'উপসংহার', 'প্রধান',
+  };
+
+  static List<String> _extractTokens(String text) {
+    final matches = RegExp(r'[a-zA-Z0-9\u0980-\u09FF]+').allMatches(text);
+    return matches.map((m) => m.group(0)!.toLowerCase()).toList();
+  }
+
+  static SummaryResult summarize(
+    String rawText, {
+    required int percent,
+    required bool bulletPoints,
+  }) {
+    final trimmed = rawText.trim();
+    if (trimmed.isEmpty) {
+      return const SummaryResult(
+        summaryText: '',
+        originalWords: 0,
+        summaryWords: 0,
+        originalSentences: 0,
+        summarySentences: 0,
+        reductionPercent: 0,
+        readingMinutes: 0,
+        keywords: [],
+      );
+    }
+
+    final safeText = trimmed.length > 15000 ? trimmed.substring(0, 15000) : trimmed;
+    final sentences = safeText
+        .split(RegExp(r'(?<=[.!?।])\s+|\n+'))
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+
+    final allTokens = _extractTokens(safeText);
+    final originalWords = allTokens.length;
+    final readingMinutes = max(1, (originalWords / 180).ceil());
+
+    final freq = <String, int>{};
+    for (final w in allTokens) {
+      if (w.length < 2 || _stopWords.contains(w)) continue;
+      freq[w] = (freq[w] ?? 0) + 1;
+    }
+
+    final sortedKeys = freq.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    final topKeywords = sortedKeys.take(6).map((e) => e.key).toList();
+
+    if (sentences.length <= 1) {
+      final out = bulletPoints ? '• ${sentences.join()}' : sentences.join();
+      return SummaryResult(
+        summaryText: out,
+        originalWords: originalWords,
+        summaryWords: originalWords,
+        originalSentences: sentences.length,
+        summarySentences: sentences.length,
+        reductionPercent: 0,
+        readingMinutes: readingMinutes,
+        keywords: topKeywords,
+      );
+    }
+
+    final scores = <int, double>{};
+    for (int i = 0; i < sentences.length; i++) {
+      final words = _extractTokens(sentences[i]);
+      if (words.isEmpty) {
+        scores[i] = 0;
+        continue;
+      }
+      double sScore = 0;
+      for (final w in words) {
+        sScore += (freq[w] ?? 0);
+        if (_cueWords.contains(w)) sScore += 2.5;
+      }
+      if (RegExp(r'\d').hasMatch(sentences[i])) sScore += 2.0;
+
+      // Normalize softly by sentence length
+      double normalized = sScore / sqrt(words.length + 1);
+      if (i == 0) normalized *= 1.25; // Topic sentence boost
+      if (i == sentences.length - 1) normalized *= 1.1; // Conclusion boost
+      scores[i] = normalized;
+    }
+
+    final keepCount = max(1, (sentences.length * percent / 100).round())
+        .clamp(1, sentences.length);
+
+    final rankedIndices = scores.keys.toList()
+      ..sort((a, b) => (scores[b] ?? 0).compareTo(scores[a] ?? 0));
+    final selectedIndices = rankedIndices.take(keepCount).toList()..sort();
+
+    final selectedSentences = selectedIndices.map((i) => sentences[i]).toList();
+    final summaryText = bulletPoints
+        ? selectedSentences.map((s) => '• $s').join('\n')
+        : selectedSentences.join(' ');
+
+    final summaryWords = _extractTokens(summaryText).length;
+    final reduction = originalWords > 0
+        ? (((originalWords - summaryWords) / originalWords) * 100).round().clamp(0, 99)
+        : 0;
+
+    return SummaryResult(
+      summaryText: summaryText,
+      originalWords: originalWords,
+      summaryWords: summaryWords,
+      originalSentences: sentences.length,
+      summarySentences: selectedSentences.length,
+      reductionPercent: reduction,
+      readingMinutes: readingMinutes,
+      keywords: topKeywords,
+    );
+  }
 }
