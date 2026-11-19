@@ -615,7 +615,7 @@ class SettingsTab extends StatelessWidget {
               const ListTile(
                 leading: Icon(Icons.verified_outlined),
                 title: Text(kAppName),
-                subtitle: Text('Pro Studio Edition • Version 2.2 (Secured)'),
+                subtitle: Text('Pro Studio Edition • Version 2.3 (Secured)'),
               ),
             ],
           ),
