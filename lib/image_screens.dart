@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:gal/gal.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:http/http.dart' as http;
@@ -13,7 +14,7 @@ import 'package:share_plus/share_plus.dart';
 import 'engines.dart';
 
 // ============================================================================
-// 1. IMAGE TO TEXT SCREEN (OFFLINE ENGLISH + ONLINE BANGLA)
+// 1. IMAGE TO TEXT SCREEN (OFFLINE ENGLISH + FIXED ONLINE BANGLA)
 // ============================================================================
 
 class ImageToTextScreen extends StatefulWidget {
@@ -86,7 +87,9 @@ class _ImageToTextScreenState extends State<ImageToTextScreen> {
     } catch (e) {
       if (mounted) {
         setState(() => _isProcessing = false);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$e'), duration: const Duration(seconds: 4)),
+        );
       }
     }
   }
@@ -95,36 +98,46 @@ class _ImageToTextScreenState extends State<ImageToTextScreen> {
     try {
       final rawBytes = await imageFile.readAsBytes();
       final uploadBytes = await compute(prepareOcrImageTopLevel, rawBytes);
+      final base64Str = 'data:image/jpeg;base64,${base64Encode(uploadBytes)}';
 
-      final request = http.MultipartRequest(
-        'POST',
-        Uri.parse('https://api.ocr.space/parse/image'),
-      );
-      request.headers['apikey'] = kOcrSpaceApiKey;
-      request.fields['OCREngine'] = '3';
-      request.fields['language'] = 'auto';
-      request.fields['scale'] = 'true';
-      request.fields['isOverlayRequired'] = 'false';
-      request.files.add(
-        http.MultipartFile.fromBytes('file', uploadBytes, filename: 'scan.jpg'),
-      );
+      final response = await http
+          .post(
+            Uri.parse('https://api.ocr.space/parse/image'),
+            headers: {
+              'apikey': kOcrSpaceApiKey,
+            },
+            body: {
+              'base64Image': base64Str,
+              'OCREngine': '3',
+              'language': 'auto',
+              'scale': 'true',
+              'isOverlayRequired': 'false',
+            },
+          )
+          .timeout(const Duration(seconds: 60));
 
-      final streamed = await request.send().timeout(const Duration(seconds: 45));
-      final response = await http.Response.fromStream(streamed);
       if (response.statusCode != 200) {
-        throw Exception('সার্ভার রেসপন্স করেনি (${response.statusCode})।');
+        throw Exception(
+          'সার্ভার এরর (${response.statusCode}): ${response.reasonPhrase ?? 'Failed'}',
+        );
       }
 
-      final Map<String, dynamic> data = jsonDecode(response.body) as Map<String, dynamic>;
+      final Map<String, dynamic> data =
+          jsonDecode(response.body) as Map<String, dynamic>;
       if (data['IsErroredOnProcessing'] == true) {
         final errList = data['ErrorMessage'];
         throw Exception(
-          errList is List && errList.isNotEmpty ? errList.join(', ') : 'অনলাইন OCR-এ সমস্যা হয়েছে।',
+          errList is List && errList.isNotEmpty
+              ? errList.join(', ')
+              : 'অনলাইন OCR-এ সমস্যা হয়েছে।',
         );
       }
       final parsed = data['ParsedResults'] as List<dynamic>?;
       if (parsed == null || parsed.isEmpty) return '';
-      return parsed.map((e) => (e['ParsedText'] ?? '').toString()).join('\n').trim();
+      return parsed
+          .map((e) => (e['ParsedText'] ?? '').toString())
+          .join('\n')
+          .trim();
     } on SocketException {
       throw Exception('ইন্টারনেট সংযোগ নেই! বাংলা OCR-এর জন্য নেট চালু করুন।');
     }
@@ -178,7 +191,9 @@ class _ImageToTextScreenState extends State<ImageToTextScreen> {
                       children: [
                         Expanded(
                           child: FilledButton.icon(
-                            onPressed: _isProcessing ? null : () => _pickAndScan(ImageSource.gallery),
+                            onPressed: _isProcessing
+                                ? null
+                                : () => _pickAndScan(ImageSource.gallery),
                             icon: const Icon(Icons.photo_library_outlined),
                             label: const Text('Gallery'),
                           ),
@@ -186,7 +201,9 @@ class _ImageToTextScreenState extends State<ImageToTextScreen> {
                         const SizedBox(width: 10),
                         Expanded(
                           child: FilledButton.tonalIcon(
-                            onPressed: _isProcessing ? null : () => _pickAndScan(ImageSource.camera),
+                            onPressed: _isProcessing
+                                ? null
+                                : () => _pickAndScan(ImageSource.camera),
                             icon: const Icon(Icons.camera_alt_outlined),
                             label: const Text('Camera'),
                           ),
@@ -234,7 +251,9 @@ class _ImageToTextScreenState extends State<ImageToTextScreen> {
               alignment: WrapAlignment.end,
               children: [
                 OutlinedButton.icon(
-                  onPressed: _resultController.text.isEmpty ? null : () => shareText(_resultController.text),
+                  onPressed: _resultController.text.isEmpty
+                      ? null
+                      : () => shareText(_resultController.text),
                   icon: const Icon(Icons.share_outlined, size: 18),
                   label: const Text('Share'),
                 ),
@@ -265,7 +284,7 @@ class _ImageToTextScreenState extends State<ImageToTextScreen> {
 }
 
 // ============================================================================
-// 2. SMART IMAGE RESIZE + ROTATE + TARGET KB COMPRESSOR
+// 2. SMART IMAGE RESIZE + ROTATE + FORMAT CONVERTER (JPG / PNG / WEBP) + TARGET KB
 // ============================================================================
 
 class ImageResizeScreen extends StatefulWidget {
@@ -289,11 +308,12 @@ class _ImageResizeScreenState extends State<ImageResizeScreen> {
   String? _resizedTempPath;
   int _newWidth = 0;
   int _newHeight = 0;
+  String _resultExt = 'jpg';
 
   bool _targetKbMode = false;
   bool _keepAspectRatio = true;
-  bool _asPng = false;
-  int _jpgQuality = 85;
+  String _outputFormat = 'jpg'; // 'jpg', 'png', 'webp'
+  int _quality = 85;
   bool _isBusy = false;
   bool _updatingFields = false;
 
@@ -430,26 +450,53 @@ class _ImageResizeScreenState extends State<ImageResizeScreen> {
         if (w <= 0 || h <= 0 || w > 10000 || h > 10000) {
           throw Exception('সঠিক Width এবং Height দিন (1 - 10000)');
         }
-        final bytes = await compute(
-          runResizeTopLevel,
-          ResizeRequest(
-            bytes: _originalBytes!,
-            width: w,
-            height: h,
-            asPng: _asPng,
-            jpgQuality: _jpgQuality,
-          ),
-        );
-        if (bytes == null) throw Exception('Resize failed');
-        outBytes = bytes;
+
+        if (_outputFormat == 'webp') {
+          Uint8List sourceForWebp = _originalBytes!;
+          if (w != _origWidth || h != _origHeight) {
+            final resizedPng = await compute(
+              runResizeTopLevel,
+              ResizeRequest(
+                bytes: _originalBytes!,
+                width: w,
+                height: h,
+                asPng: true,
+                jpgQuality: 100,
+              ),
+            );
+            if (resizedPng == null) throw Exception('Resize failed');
+            sourceForWebp = resizedPng;
+          }
+          outBytes = await FlutterImageCompress.compressWithList(
+            sourceForWebp,
+            minWidth: w,
+            minHeight: h,
+            quality: _quality,
+            format: CompressFormat.webp,
+          );
+          ext = 'webp';
+        } else {
+          final bytes = await compute(
+            runResizeTopLevel,
+            ResizeRequest(
+              bytes: _originalBytes!,
+              width: w,
+              height: h,
+              asPng: _outputFormat == 'png',
+              jpgQuality: _quality,
+            ),
+          );
+          if (bytes == null) throw Exception('Resize failed');
+          outBytes = bytes;
+          ext = _outputFormat;
+        }
         outW = w;
         outH = h;
-        ext = _asPng ? 'png' : 'jpg';
       }
 
       final tempDir = await getTemporaryDirectory();
       final ts = DateTime.now().millisecondsSinceEpoch;
-      final tempPath = '${tempDir.path}/resized_$ts.$ext';
+      final tempPath = '${tempDir.path}/converted_$ts.$ext';
       await File(tempPath).writeAsBytes(outBytes);
 
       if (mounted) {
@@ -458,6 +505,7 @@ class _ImageResizeScreenState extends State<ImageResizeScreen> {
           _resizedTempPath = tempPath;
           _newWidth = outW;
           _newHeight = outH;
+          _resultExt = ext.toUpperCase();
           _isBusy = false;
         });
       }
@@ -476,7 +524,7 @@ class _ImageResizeScreenState extends State<ImageResizeScreen> {
       await Gal.putImage(_resizedTempPath!);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('ছবি গ্যালারিতে সেভ হয়েছে! ✅')),
+          SnackBar(content: Text('$_resultExt ছবি গ্যালারিতে সেভ হয়েছে! ✅')),
         );
       }
     } catch (e) {
@@ -489,7 +537,7 @@ class _ImageResizeScreenState extends State<ImageResizeScreen> {
   Future<void> _shareResized() async {
     if (_resizedTempPath == null) return;
     await SharePlus.instance.share(
-      ShareParams(files: [XFile(_resizedTempPath!)], text: 'Resized with $kAppName'),
+      ShareParams(files: [XFile(_resizedTempPath!)], text: 'Converted with $kAppName'),
     );
   }
 
@@ -497,7 +545,7 @@ class _ImageResizeScreenState extends State<ImageResizeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Smart Image Resize'),
+        title: const Text('Resize & Format Converter'),
         actions: [
           if (_originalBytes != null && !_isBusy)
             IconButton(
@@ -539,7 +587,7 @@ class _ImageResizeScreenState extends State<ImageResizeScreen> {
                       const SizedBox(height: 10),
                       SegmentedButton<bool>(
                         segments: const [
-                          ButtonSegment(value: false, label: Text('Dimensions (px)')),
+                          ButtonSegment(value: false, label: Text('Resize / Convert')),
                           ButtonSegment(value: true, label: Text('Target KB')),
                         ],
                         selected: {_targetKbMode},
@@ -579,6 +627,7 @@ class _ImageResizeScreenState extends State<ImageResizeScreen> {
                             ActionChip(label: const Text('25%'), onPressed: () => _applyScale(0.25)),
                             ActionChip(label: const Text('50%'), onPressed: () => _applyScale(0.50)),
                             ActionChip(label: const Text('75%'), onPressed: () => _applyScale(0.75)),
+                            ActionChip(label: const Text('100%'), onPressed: () => _applyScale(1.0)),
                           ],
                         ),
                         const SizedBox(height: 10),
@@ -620,34 +669,39 @@ class _ImageResizeScreenState extends State<ImageResizeScreen> {
                           value: _keepAspectRatio,
                           onChanged: (v) => setState(() => _keepAspectRatio = v),
                         ),
-                        Row(
+                        const Text('আউটপুট ফরম্যাট (Convert to):', style: TextStyle(fontWeight: FontWeight.w600)),
+                        const SizedBox(height: 6),
+                        Wrap(
+                          spacing: 8,
                           children: [
-                            const Text('ফরম্যাট: '),
-                            const SizedBox(width: 8),
                             ChoiceChip(
                               label: const Text('JPG'),
-                              selected: !_asPng,
-                              onSelected: (_) => setState(() => _asPng = false),
+                              selected: _outputFormat == 'jpg',
+                              onSelected: (_) => setState(() => _outputFormat = 'jpg'),
                             ),
-                            const SizedBox(width: 8),
                             ChoiceChip(
                               label: const Text('PNG'),
-                              selected: _asPng,
-                              onSelected: (_) => setState(() => _asPng = true),
+                              selected: _outputFormat == 'png',
+                              onSelected: (_) => setState(() => _outputFormat = 'png'),
+                            ),
+                            ChoiceChip(
+                              label: const Text('WEBP'),
+                              selected: _outputFormat == 'webp',
+                              onSelected: (_) => setState(() => _outputFormat = 'webp'),
                             ),
                           ],
                         ),
-                        if (!_asPng)
+                        if (_outputFormat != 'png')
                           Row(
                             children: [
-                              Text('Quality: $_jpgQuality%'),
+                              Text('Quality: $_quality%'),
                               Expanded(
                                 child: Slider(
                                   min: 10,
                                   max: 100,
                                   divisions: 18,
-                                  value: _jpgQuality.toDouble(),
-                                  onChanged: (v) => setState(() => _jpgQuality = v.round()),
+                                  value: _quality.toDouble(),
+                                  onChanged: (v) => setState(() => _quality = v.round()),
                                 ),
                               ),
                             ],
@@ -657,7 +711,11 @@ class _ImageResizeScreenState extends State<ImageResizeScreen> {
                       FilledButton.icon(
                         onPressed: _processImage,
                         icon: const Icon(Icons.transform),
-                        label: Text(_targetKbMode ? 'Compress to Target KB' : 'Resize Image'),
+                        label: Text(
+                          _targetKbMode
+                              ? 'Compress to Target KB'
+                              : 'Convert to ${_outputFormat.toUpperCase()} & Resize',
+                        ),
                       ),
                     ],
                   ),
@@ -673,7 +731,7 @@ class _ImageResizeScreenState extends State<ImageResizeScreen> {
                   child: Column(
                     children: [
                       Text(
-                        'New: $_newWidth × $_newHeight px • ${_formatSize(_resizedBytes!.length)}',
+                        '$_resultExt • $_newWidth × $_newHeight px • ${_formatSize(_resizedBytes!.length)}',
                         style: const TextStyle(fontWeight: FontWeight.bold),
                       ),
                       const SizedBox(height: 10),
@@ -706,6 +764,251 @@ class _ImageResizeScreenState extends State<ImageResizeScreen> {
                 ),
               ),
             ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// 3. YOUTUBE THUMBNAIL DOWNLOADER SCREEN
+// ============================================================================
+
+class _ThumbItem {
+  final String label;
+  final String resolution;
+  final String url;
+  final Uint8List bytes;
+  const _ThumbItem({
+    required this.label,
+    required this.resolution,
+    required this.url,
+    required this.bytes,
+  });
+}
+
+class YoutubeThumbnailScreen extends StatefulWidget {
+  const YoutubeThumbnailScreen({super.key});
+
+  @override
+  State<YoutubeThumbnailScreen> createState() => _YoutubeThumbnailScreenState();
+}
+
+class _YoutubeThumbnailScreenState extends State<YoutubeThumbnailScreen> {
+  final TextEditingController _urlController = TextEditingController();
+  bool _isLoading = false;
+  List<_ThumbItem> _thumbnails = [];
+  String? _videoId;
+
+  @override
+  void dispose() {
+    _urlController.dispose();
+    super.dispose();
+  }
+
+  String? _extractVideoId(String input) {
+    final trimmed = input.trim();
+    if (RegExp(r'^[a-zA-Z0-9_-]{11}$').hasMatch(trimmed)) {
+      return trimmed;
+    }
+    final match = RegExp(
+      r'(?:youtube\.com/(?:watch\?(?:.*&)?v=|shorts/|embed/|live/)|youtu\.be/)([a-zA-Z0-9_-]{11})',
+    ).firstMatch(trimmed);
+    return match?.group(1);
+  }
+
+  Future<void> _fetchThumbnails() async {
+    final id = _extractVideoId(_urlController.text);
+    if (id == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('সঠিক YouTube ভিডিও বা Shorts লিংক দিন!')),
+      );
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+      _thumbnails = [];
+      _videoId = id;
+    });
+
+    final candidates = [
+      ('Max HD', '1280 × 720', 'https://img.youtube.com/vi/$id/maxresdefault.jpg'),
+      ('Standard SD', '640 × 480', 'https://img.youtube.com/vi/$id/sddefault.jpg'),
+      ('High HQ', '480 × 360', 'https://img.youtube.com/vi/$id/hqdefault.jpg'),
+      ('Medium MQ', '320 × 180', 'https://img.youtube.com/vi/$id/mqdefault.jpg'),
+    ];
+
+    try {
+      final results = await Future.wait(
+        candidates.map((c) async {
+          try {
+            final res = await http
+                .get(Uri.parse(c.$3))
+                .timeout(const Duration(seconds: 15));
+            if (res.statusCode == 200 && res.bodyBytes.length > 1500) {
+              return _ThumbItem(
+                label: c.$1,
+                resolution: c.$2,
+                url: c.$3,
+                bytes: res.bodyBytes,
+              );
+            }
+          } catch (_) {}
+          return null;
+        }),
+      );
+
+      if (!mounted) return;
+      final available = results.whereType<_ThumbItem>().toList();
+      setState(() {
+        _thumbnails = available;
+        _isLoading = false;
+      });
+
+      if (available.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('থাম্বনেইল পাওয়া যায়নি। ইন্টারনেট ও লিংক চেক করুন।')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('ত্রুটি: $e')));
+      }
+    }
+  }
+
+  Future<void> _saveThumb(_ThumbItem item) async {
+    try {
+      final tempDir = await getTemporaryDirectory();
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      final path = '${tempDir.path}/yt_thumb_${_videoId}_$ts.jpg';
+      await File(path).writeAsBytes(item.bytes);
+
+      if (!await Gal.hasPermission()) await Gal.requestPermission();
+      await Gal.putImage(path);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${item.label} থাম্বনেইল গ্যালারিতে সেভ হয়েছে! ✅')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('সেভ হয়নি: $e')));
+      }
+    }
+  }
+
+  Future<void> _shareThumb(_ThumbItem item) async {
+    final tempDir = await getTemporaryDirectory();
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    final path = '${tempDir.path}/yt_thumb_share_$ts.jpg';
+    await File(path).writeAsBytes(item.bytes);
+    await SharePlus.instance.share(
+      ShareParams(files: [XFile(path)], text: 'YouTube Thumbnail (${item.resolution})'),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('YouTube Thumbnail Downloader')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              controller: _urlController,
+              decoration: InputDecoration(
+                labelText: 'YouTube ভিডিও বা Shorts লিংক পেস্ট করুন',
+                hintText: 'https://youtu.be/... বা watch?v=...',
+                prefixIcon: const Icon(Icons.link),
+                suffixIcon: _urlController.text.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear),
+                        onPressed: () => setState(() {
+                          _urlController.clear();
+                          _thumbnails = [];
+                        }),
+                      )
+                    : null,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+              ),
+              onChanged: (_) => setState(() {}),
+            ),
+            const SizedBox(height: 10),
+            FilledButton.icon(
+              onPressed: _isLoading ? null : _fetchThumbnails,
+              icon: const Icon(Icons.download_for_offline_outlined),
+              label: const Text('Get Thumbnails'),
+            ),
+            if (_isLoading) ...[
+              const SizedBox(height: 24),
+              const Center(child: CircularProgressIndicator()),
+              const SizedBox(height: 8),
+              const Center(child: Text('থাম্বনেইল খোঁজা হচ্ছে...')),
+            ],
+            if (_thumbnails.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              ..._thumbnails.map(
+                (item) => Card(
+                  margin: const EdgeInsets.only(bottom: 14),
+                  clipBehavior: Clip.antiAlias,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Image.memory(item.bytes, height: 190, fit: BoxFit.cover),
+                      Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  item.label,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 15,
+                                  ),
+                                ),
+                                Text(
+                                  '${item.resolution} • ${(item.bytes.length / 1024).toStringAsFixed(0)} KB',
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              ],
+                            ),
+                            Row(
+                              children: [
+                                IconButton(
+                                  icon: const Icon(Icons.share_outlined),
+                                  onPressed: () => _shareThumb(item),
+                                ),
+                                FilledButton.tonalIcon(
+                                  onPressed: () => _saveThumb(item),
+                                  icon: const Icon(Icons.download, size: 18),
+                                  label: const Text('Save'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+            const SizedBox(height: 12),
+            Text(
+              'দ্রষ্টব্য: এই টুলটি কেবল পাবলিক YouTube ভিডিওর থাম্বনেইল ছবি প্রিভিউ ও সেভ করে, কোনো ভিডিও ডাউনলোড করে না। কপিরাইট নীতিমালা মেনে ব্যবহার করুন।',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey),
+              textAlign: TextAlign.center,
+            ),
           ],
         ),
       ),
