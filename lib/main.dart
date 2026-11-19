@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'engines.dart';
+import 'extra_screens.dart';
 import 'image_screens.dart';
 import 'text_screens.dart';
 
@@ -126,7 +127,7 @@ class MainShellScreen extends StatelessWidget {
 }
 
 // ============================================================================
-// TAB 0: PRO DASHBOARD HOME
+// TAB 0: PRO DASHBOARD HOME (WITH FIXED DARK-MODE BANNER)
 // ============================================================================
 
 class DashboardHomeTab extends StatelessWidget {
@@ -140,6 +141,9 @@ class DashboardHomeTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final bannerStart = app.seedColor;
+    final bannerEnd = Color.lerp(app.seedColor, const Color(0xFF0F172A), 0.58)!;
+
     final tools = [
       _ToolCardData(
         title: 'Stylish Text',
@@ -170,8 +174,22 @@ class DashboardHomeTab extends StatelessWidget {
         onTap: () => _open(context, TextToolsScreen(app: app)),
       ),
       _ToolCardData(
+        title: 'Emoji Text Art',
+        subtitle: 'ইমোজি দিয়ে বড় নাম ও আর্ট',
+        icon: Icons.emoji_emotions_outlined,
+        color: Colors.amber.shade800,
+        onTap: () => _open(context, EmojiArtScreen(app: app)),
+      ),
+      _ToolCardData(
+        title: 'Study Summary',
+        subtitle: 'প্যারাগ্রাফ সামারি (বাংলা/Eng)',
+        icon: Icons.summarize_outlined,
+        color: Colors.blue.shade700,
+        onTap: () => _open(context, ParagraphSummaryScreen(app: app)),
+      ),
+      _ToolCardData(
         title: 'Image to Text',
-        subtitle: 'অফলাইন Eng + অনলাইন বাংলা',
+        subtitle: 'ছবি থেকে লেখা স্ক্যান',
         icon: Icons.document_scanner_outlined,
         color: Colors.indigo,
         onTap: () => _open(context, ImageToTextScreen(app: app)),
@@ -190,16 +208,22 @@ class DashboardHomeTab extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Gradient Hero Banner
           Container(
             padding: const EdgeInsets.all(18),
             decoration: BoxDecoration(
               gradient: LinearGradient(
-                colors: [cs.primary, cs.tertiary],
+                colors: [bannerStart, bannerEnd],
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               ),
               borderRadius: BorderRadius.circular(20),
+              boxShadow: [
+                BoxShadow(
+                  color: bannerStart.withValues(alpha: 0.25),
+                  blurRadius: 12,
+                  offset: const Offset(0, 6),
+                ),
+              ],
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -213,19 +237,25 @@ class DashboardHomeTab extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 6),
-                const Text(
-                  'স্টাইলিশ ফন্ট, গেমিং নাম, সিম্বল, বাংলা OCR ও স্মার্ট ইমেজ রিসাইজার এখন এক জায়গায়!',
-                  style: TextStyle(color: Colors.white70, fontSize: 13),
+                Text(
+                  'স্টাইলিশ ফন্ট, ইমোজি আর্ট, স্টাডি সামারি, সিম্বল ও স্মার্ট ইমেজ রিসাইজার এখন এক জায়গায়!',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.90),
+                    fontSize: 13,
+                  ),
                 ),
                 const SizedBox(height: 12),
-                FilledButton.tonalIcon(
+                FilledButton.icon(
                   style: FilledButton.styleFrom(
                     backgroundColor: Colors.white,
-                    foregroundColor: cs.primary,
+                    foregroundColor: bannerEnd,
                   ),
                   onPressed: () => app.setTab(1),
                   icon: const Icon(Icons.edit, size: 18),
-                  label: const Text('Start Typing Stylish Text'),
+                  label: const Text(
+                    'Start Typing Stylish Text',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
                 ),
               ],
             ),
@@ -354,7 +384,7 @@ class SavedAndHistoryTab extends StatefulWidget {
 }
 
 class _SavedAndHistoryTabState extends State<SavedAndHistoryTab> {
-  int _segment = 0; // 0 = Favorites, 1 = History
+  int _segment = 0;
 
   @override
   Widget build(BuildContext context) {
@@ -441,7 +471,7 @@ class _SavedAndHistoryTabState extends State<SavedAndHistoryTab> {
 }
 
 // ============================================================================
-// TAB 3: PRO THEMES & SETTINGS
+// TAB 3: PRO THEMES, PRIVACY & SETTINGS
 // ============================================================================
 
 class SettingsTab extends StatelessWidget {
@@ -463,6 +493,26 @@ class SettingsTab extends StatelessWidget {
         );
       }
     }
+  }
+
+  void _showPrivacyDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Privacy & Data Safety'),
+        content: const Text(
+          '• Stylish Text, Emoji Art, Study Summary, English OCR এবং Image Resize আপনার ফোনের ভেতরেই (Offline) কাজ করে।\n\n'
+          '• আপনার Favorites ও Copy History কেবল আপনার ফোনের লোকাল স্টোরেজে নিরাপদ থাকে—কোনো সার্ভারে পাঠানো হয় না।\n\n'
+          '• Camera ও Gallery পারমিশন শুধুমাত্র আপনি যখন ছবি বাছাই বা স্ক্যান করেন তখনই ব্যবহার করা হয়।',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('ঠিক আছে'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -534,6 +584,14 @@ class SettingsTab extends StatelessWidget {
               ),
               const Divider(height: 1),
               ListTile(
+                leading: const Icon(Icons.shield_outlined),
+                title: const Text('Privacy & Data Safety'),
+                subtitle: const Text('অ্যাপের নিরাপত্তা ও তথ্যের সুরক্ষা নীতি'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _showPrivacyDialog(context),
+              ),
+              const Divider(height: 1),
+              ListTile(
                 leading: const Icon(Icons.language),
                 title: const Text('More Online Tools (Website)'),
                 subtitle: Text(
@@ -546,7 +604,7 @@ class SettingsTab extends StatelessWidget {
               const ListTile(
                 leading: Icon(Icons.verified_outlined),
                 title: Text(kAppName),
-                subtitle: Text('Pro Studio Edition • Version 2.0'),
+                subtitle: Text('Pro Studio Edition • Version 2.1 (Secured)'),
               ),
             ],
           ),
