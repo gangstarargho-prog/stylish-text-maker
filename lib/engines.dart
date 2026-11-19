@@ -9,7 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 const String kAppName = 'Stylish Text Maker';
 const String kWebsiteUrl = '';
-const String kOcrSpaceApiKey = 'helloworld';
+const String kOcrSpaceApiKey = 'K8258483675268988957';
 
 class ThemeOption {
   final String name;
