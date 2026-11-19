@@ -126,10 +126,6 @@ class MainShellScreen extends StatelessWidget {
   }
 }
 
-// ============================================================================
-// TAB 0: PRO DASHBOARD HOME (WITH FIXED DARK-MODE BANNER)
-// ============================================================================
-
 class DashboardHomeTab extends StatelessWidget {
   final AppController app;
   const DashboardHomeTab({super.key, required this.app});
@@ -189,14 +185,14 @@ class DashboardHomeTab extends StatelessWidget {
       ),
       _ToolCardData(
         title: 'Image to Text',
-        subtitle: 'ছবি থেকে লেখা স্ক্যান',
+        subtitle: 'ইংরেজি + বাংলা OCR স্ক্যান',
         icon: Icons.document_scanner_outlined,
         color: Colors.indigo,
         onTap: () => _open(context, ImageToTextScreen(app: app)),
       ),
       _ToolCardData(
-        title: 'Smart Resize',
-        subtitle: 'রিসাইজ, রোটেট ও KB কমপ্রেস',
+        title: 'Resize & WebP',
+        subtitle: 'PNG/JPG/WebP ও KB কমপ্রেস',
         icon: Icons.photo_size_select_large,
         color: Colors.green.shade700,
         onTap: () => _open(context, const ImageResizeScreen()),
@@ -238,7 +234,7 @@ class DashboardHomeTab extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'স্টাইলিশ ফন্ট, ইমোজি আর্ট, স্টাডি সামারি, সিম্বল ও স্মার্ট ইমেজ রিসাইজার এখন এক জায়গায়!',
+                  'স্টাইলিশ ফন্ট, ইমোজি আর্ট, স্টাডি সামারি, বাংলা OCR, WebP কনভার্টার ও YT থাম্বনেইল এখন এক অ্যাপে!',
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.90),
                     fontSize: 13,
@@ -321,6 +317,29 @@ class DashboardHomeTab extends StatelessWidget {
               );
             },
           ),
+          const SizedBox(height: 12),
+          Card(
+            elevation: 0.8,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+            child: ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              leading: Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.red.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(Icons.ondemand_video, color: Colors.red, size: 28),
+              ),
+              title: const Text(
+                'YouTube Thumbnail Downloader',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              subtitle: const Text('যেকোনো ভিডিও বা Shorts লিংক থেকে HD থাম্বনেইল সেভ করুন'),
+              trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+              onTap: () => _open(context, const YoutubeThumbnailScreen()),
+            ),
+          ),
           if (app.history.isNotEmpty) ...[
             const SizedBox(height: 20),
             Row(
@@ -370,10 +389,6 @@ class _ToolCardData {
     required this.onTap,
   });
 }
-
-// ============================================================================
-// TAB 2: SAVED FAVORITES & COPY HISTORY
-// ============================================================================
 
 class SavedAndHistoryTab extends StatefulWidget {
   final AppController app;
@@ -469,10 +484,6 @@ class _SavedAndHistoryTabState extends State<SavedAndHistoryTab> {
     );
   }
 }
-
-// ============================================================================
-// TAB 3: PRO THEMES, PRIVACY & SETTINGS
-// ============================================================================
 
 class SettingsTab extends StatelessWidget {
   final AppController app;
@@ -604,7 +615,7 @@ class SettingsTab extends StatelessWidget {
               const ListTile(
                 leading: Icon(Icons.verified_outlined),
                 title: Text(kAppName),
-                subtitle: Text('Pro Studio Edition • Version 2.1 (Secured)'),
+                subtitle: Text('Pro Studio Edition • Version 2.2 (Secured)'),
               ),
             ],
           ),
