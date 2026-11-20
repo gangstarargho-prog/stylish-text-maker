@@ -1,10 +1,6 @@
 import 'package:flutter/material.dart';
 import 'engines.dart';
 
-// ============================================================================
-// 1. CLOUD ACCOUNT, SYNC & DELETE ACCOUNT SCREEN
-// ============================================================================
-
 class CloudAccountScreen extends StatefulWidget {
   final AppController app;
   const CloudAccountScreen({super.key, required this.app});
@@ -73,8 +69,21 @@ class _CloudAccountScreenState extends State<CloudAccountScreen> {
     }
   }
 
+  Future<void> _handleGoogleLogin() async {
+    setState(() => _busy = true);
+    final err = await widget.app.loginWithGoogle();
+    if (!mounted) return;
+    setState(() => _busy = false);
+    if (err != null) {
+      _showMsg(err);
+    } else {
+      _showMsg('Google দিয়ে সফলভাবে লগইন ও সিঙ্ক হয়েছে! ✅');
+    }
+  }
+
   Future<void> _confirmDeleteAccount() async {
-    final passCtrl = TextEditingController();
+    final inputCtrl = TextEditingController();
+    final isGoogle = widget.app.isGoogleUser;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -83,17 +92,19 @@ class _CloudAccountScreenState extends State<CloudAccountScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'সতর্কতা: এতে সার্ভার থেকে আপনার অ্যাকাউন্ট এবং সব ক্লাউড ব্যাকআপ স্থায়ীভাবে মুছে যাবে। নিশ্চিত করতে আপনার পাসওয়ার্ড দিন:',
-              style: TextStyle(fontSize: 13),
+            Text(
+              isGoogle
+                  ? 'সতর্কতা: এতে আপনার অ্যাকাউন্ট ও ক্লাউড ডেটা স্থায়ীভাবে মুছে যাবে। নিশ্চিত করতে বক্সে DELETE লিখুন:'
+                  : 'সতর্কতা: এতে আপনার অ্যাকাউন্ট ও ক্লাউড ডেটা স্থায়ীভাবে মুছে যাবে। নিশ্চিত করতে আপনার পাসওয়ার্ড দিন:',
+              style: const TextStyle(fontSize: 13),
             ),
             const SizedBox(height: 12),
             TextField(
-              controller: passCtrl,
-              obscureText: true,
-              decoration: const InputDecoration(
-                labelText: 'পাসওয়ার্ড',
-                border: OutlineInputBorder(),
+              controller: inputCtrl,
+              obscureText: !isGoogle,
+              decoration: InputDecoration(
+                labelText: isGoogle ? 'লিখুন: DELETE' : 'পাসওয়ার্ড',
+                border: const OutlineInputBorder(),
                 isDense: true,
               ),
             ),
@@ -114,13 +125,16 @@ class _CloudAccountScreenState extends State<CloudAccountScreen> {
     );
 
     if (confirmed != true) {
-      passCtrl.dispose();
+      inputCtrl.dispose();
       return;
     }
 
     setState(() => _busy = true);
-    final err = await widget.app.deleteAccount(passCtrl.text);
-    passCtrl.dispose();
+    final err = await widget.app.deleteAccount(
+      password: isGoogle ? '' : inputCtrl.text,
+      confirmText: isGoogle ? inputCtrl.text.trim() : '',
+    );
+    inputCtrl.dispose();
     if (!mounted) return;
     setState(() => _busy = false);
 
@@ -176,13 +190,15 @@ class _CloudAccountScreenState extends State<CloudAccountScreen> {
                                   style: Theme.of(context).textTheme.bodySmall,
                                 ),
                                 const SizedBox(height: 4),
-                                const Row(
+                                Row(
                                   children: [
-                                    Icon(Icons.cloud_done, size: 16, color: Colors.green),
-                                    SizedBox(width: 4),
+                                    const Icon(Icons.cloud_done, size: 16, color: Colors.green),
+                                    const SizedBox(width: 4),
                                     Text(
-                                      'Cloud Sync Active',
-                                      style: TextStyle(color: Colors.green, fontSize: 12),
+                                      widget.app.isGoogleUser
+                                          ? 'Google Cloud Sync Active'
+                                          : 'Cloud Sync Active',
+                                      style: const TextStyle(color: Colors.green, fontSize: 12),
                                     ),
                                   ],
                                 ),
@@ -277,12 +293,36 @@ class _CloudAccountScreenState extends State<CloudAccountScreen> {
                   child: const Padding(
                     padding: EdgeInsets.all(12),
                     child: Text(
-                      '☁️ লগইন সম্পূর্ণ ঐচ্ছিক। অ্যাকাউন্ট খুললে আপনার Favorites ও Copy History ক্লাউড সার্ভারে সুরক্ষিত থাকবে।',
+                      '☁️ লগইন সম্পূর্ণ ঐচ্ছিক। Google বা Email দিয়ে অ্যাকাউন্ট খুললে আপনার Favorites ও History ক্লাউড সার্ভারে সুরক্ষিত থাকবে।',
                       style: TextStyle(fontSize: 13),
                     ),
                   ),
                 ),
                 const SizedBox(height: 14),
+                FilledButton.tonalIcon(
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                  onPressed: _busy ? null : _handleGoogleLogin,
+                  icon: const Icon(Icons.g_mobiledata, size: 28),
+                  label: const Text(
+                    'Continue with Google',
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                  ),
+                ),
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 14),
+                  child: Row(
+                    children: [
+                      Expanded(child: Divider()),
+                      Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 10),
+                        child: Text('অথবা Email দিয়ে', style: TextStyle(fontSize: 12)),
+                      ),
+                      Expanded(child: Divider()),
+                    ],
+                  ),
+                ),
                 SegmentedButton<bool>(
                   segments: const [
                     ButtonSegment(value: false, label: Text('Login')),
@@ -344,10 +384,6 @@ class _CloudAccountScreenState extends State<CloudAccountScreen> {
     );
   }
 }
-
-// ============================================================================
-// 2. IN-APP USER FEEDBACK SCREEN
-// ============================================================================
 
 class FeedbackScreen extends StatefulWidget {
   final AppController app;
