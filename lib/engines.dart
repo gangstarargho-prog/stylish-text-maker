@@ -1,14 +1,20 @@
+import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 const String kAppName = 'Stylish Text Maker';
-const String kWebsiteUrl = '';
+const String kWebsiteUrl = 'https://tools-web.qevano.site';
+const String kPrivacyUrl = 'https://tools-web.qevano.site/privacy.html';
+const String kApiBaseUrl = 'https://tools-web.qevano.site/api/index.php';
+const String kBackendApiKey = 'STM_Qevano_2026_SecureKey_9482';
 const String kOcrSpaceApiKey = 'K8258483675268988957';
 
 class ThemeOption {
@@ -25,8 +31,19 @@ const List<ThemeOption> kThemeOptions = [
   ThemeOption('Rose Pink', Color(0xFFE11D48)),
 ];
 
+class CloudNotice {
+  final int id;
+  final String title;
+  final String message;
+  const CloudNotice({
+    required this.id,
+    required this.title,
+    required this.message,
+  });
+}
+
 // ============================================================================
-// APP CONTROLLER (STATE & PREFERENCES)
+// APP CONTROLLER (LOCAL + CLOUD SYNC STATE)
 // ============================================================================
 
 class AppController extends ChangeNotifier {
@@ -39,13 +56,37 @@ class AppController extends ChangeNotifier {
   List<String> history = [];
   final TextEditingController stylishController = TextEditingController();
 
+  String? authToken;
+  String? userName;
+  String? userEmail;
+  CloudNotice? serverNotice;
+  bool noticeDismissed = false;
+
+  bool get isLoggedIn => authToken != null && authToken!.isNotEmpty;
   Color get seedColor => kThemeOptions[themeIndex.clamp(0, kThemeOptions.length - 1)].color;
+
+  Map<String, String> _apiHeaders({bool withAuth = false}) => {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Accept': 'application/json',
+        'User-Agent': 'StylishTextMakerApp/2.4',
+        'X-App-Key': kBackendApiKey,
+        if (withAuth && authToken != null) 'X-Auth-Token': authToken!,
+      };
 
   Future<void> loadPrefs() async {
     isDarkMode = await _prefs.getBool('dark_mode') ?? false;
     themeIndex = await _prefs.getInt('theme_index') ?? 0;
     favorites = await _prefs.getStringList('favorites') ?? <String>[];
     history = await _prefs.getStringList('copy_history') ?? <String>[];
+    authToken = await _prefs.getString('auth_token');
+    userName = await _prefs.getString('user_name');
+    userEmail = await _prefs.getString('user_email');
+    notifyListeners();
+    fetchNotice();
+  }
+
+  void dismissNotice() {
+    noticeDismissed = true;
     notifyListeners();
   }
 
@@ -85,6 +126,7 @@ class AppController extends ChangeNotifier {
     favorites = updated;
     notifyListeners();
     await _prefs.setStringList('favorites', updated);
+    if (isLoggedIn) syncPush();
   }
 
   Future<void> addToHistory(String text) async {
@@ -106,6 +148,233 @@ class AppController extends ChangeNotifier {
     history = [];
     notifyListeners();
     await _prefs.remove('copy_history');
+    if (isLoggedIn) syncPush();
+  }
+
+  // ---------------- CLOUD API METHODS ----------------
+
+  Future<void> fetchNotice() async {
+    try {
+      final res = await http
+          .get(Uri.parse('$kApiBaseUrl?action=notice'), headers: _apiHeaders())
+          .timeout(const Duration(seconds: 10));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final n = data['notice'];
+        if (data['ok'] == true && n is Map<String, dynamic>) {
+          serverNotice = CloudNotice(
+            id: (n['id'] as num?)?.toInt() ?? 0,
+            title: (n['title'] ?? '').toString(),
+            message: (n['message'] ?? '').toString(),
+          );
+          notifyListeners();
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _saveAuthSession(String token, String name, String email) async {
+    authToken = token;
+    userName = name;
+    userEmail = email;
+    await _prefs.setString('auth_token', token);
+    await _prefs.setString('user_name', name);
+    await _prefs.setString('user_email', email);
+    notifyListeners();
+  }
+
+  Future<void> _clearAuthSession() async {
+    authToken = null;
+    userName = null;
+    userEmail = null;
+    await _prefs.remove('auth_token');
+    await _prefs.remove('user_name');
+    await _prefs.remove('user_email');
+    notifyListeners();
+  }
+
+  Future<void> _mergeCloudLists(List<dynamic> cloudFavs, List<dynamic> cloudHist) async {
+    final mergedFavs = <String>[
+      ...favorites,
+      ...cloudFavs.map((e) => e.toString()),
+    ].toSet().take(100).toList();
+
+    final mergedHist = <String>[
+      ...history,
+      ...cloudHist.map((e) => e.toString()),
+    ].toSet().take(40).toList();
+
+    favorites = mergedFavs;
+    history = mergedHist;
+    await _prefs.setStringList('favorites', mergedFavs);
+    await _prefs.setStringList('copy_history', mergedHist);
+    notifyListeners();
+  }
+
+  Future<String?> registerAccount(String name, String email, String password) async {
+    try {
+      final res = await http
+          .post(
+            Uri.parse('$kApiBaseUrl?action=register'),
+            headers: _apiHeaders(),
+            body: jsonEncode({'name': name, 'email': email, 'password': password}),
+          )
+          .timeout(const Duration(seconds: 20));
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && data['ok'] == true) {
+        final u = data['user'] as Map<String, dynamic>;
+        await _saveAuthSession(
+          data['token'].toString(),
+          u['name'].toString(),
+          u['email'].toString(),
+        );
+        await syncPush();
+        return null;
+      }
+      return (data['error'] ?? 'রেজিস্ট্রেশন ব্যর্থ হয়েছে (${res.statusCode})').toString();
+    } on SocketException {
+      return 'ইন্টারনেট সংযোগ নেই!';
+    } catch (e) {
+      return 'সার্ভারে সংযোগ করা যায়নি: $e';
+    }
+  }
+
+  Future<String?> loginAccount(String email, String password) async {
+    try {
+      final res = await http
+          .post(
+            Uri.parse('$kApiBaseUrl?action=login'),
+            headers: _apiHeaders(),
+            body: jsonEncode({'email': email, 'password': password}),
+          )
+          .timeout(const Duration(seconds: 20));
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && data['ok'] == true) {
+        final u = data['user'] as Map<String, dynamic>;
+        await _saveAuthSession(
+          data['token'].toString(),
+          u['name'].toString(),
+          u['email'].toString(),
+        );
+        await _mergeCloudLists(
+          (data['favorites'] as List<dynamic>?) ?? [],
+          (data['history'] as List<dynamic>?) ?? [],
+        );
+        return null;
+      }
+      return (data['error'] ?? 'লগইন ব্যর্থ হয়েছে (${res.statusCode})').toString();
+    } on SocketException {
+      return 'ইন্টারনেট সংযোগ নেই!';
+    } catch (e) {
+      return 'সার্ভারে সংযোগ করা যায়নি: $e';
+    }
+  }
+
+  Future<void> logoutAccount() async {
+    try {
+      if (isLoggedIn) {
+        await http
+            .post(
+              Uri.parse('$kApiBaseUrl?action=logout'),
+              headers: _apiHeaders(withAuth: true),
+            )
+            .timeout(const Duration(seconds: 10));
+      }
+    } catch (_) {}
+    await _clearAuthSession();
+  }
+
+  Future<String?> syncPush() async {
+    if (!isLoggedIn) return 'লগইন করা নেই।';
+    try {
+      final res = await http
+          .post(
+            Uri.parse('$kApiBaseUrl?action=sync_push'),
+            headers: _apiHeaders(withAuth: true),
+            body: jsonEncode({'favorites': favorites, 'history': history}),
+          )
+          .timeout(const Duration(seconds: 20));
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && data['ok'] == true) return null;
+      if (res.statusCode == 401) await _clearAuthSession();
+      return (data['error'] ?? 'ব্যাকআপ ব্যর্থ হয়েছে').toString();
+    } on SocketException {
+      return 'ইন্টারনেট সংযোগ নেই!';
+    } catch (e) {
+      return 'ত্রুটি: $e';
+    }
+  }
+
+  Future<String?> syncPull() async {
+    if (!isLoggedIn) return 'লগইন করা নেই।';
+    try {
+      final res = await http
+          .get(
+            Uri.parse('$kApiBaseUrl?action=sync_pull'),
+            headers: _apiHeaders(withAuth: true),
+          )
+          .timeout(const Duration(seconds: 20));
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && data['ok'] == true) {
+        await _mergeCloudLists(
+          (data['favorites'] as List<dynamic>?) ?? [],
+          (data['history'] as List<dynamic>?) ?? [],
+        );
+        return null;
+      }
+      if (res.statusCode == 401) await _clearAuthSession();
+      return (data['error'] ?? 'রিস্টোর ব্যর্থ হয়েছে').toString();
+    } on SocketException {
+      return 'ইন্টারনেট সংযোগ নেই!';
+    } catch (e) {
+      return 'ত্রুটি: $e';
+    }
+  }
+
+  Future<String?> deleteAccount(String password) async {
+    if (!isLoggedIn) return 'লগইন করা নেই।';
+    try {
+      final res = await http
+          .post(
+            Uri.parse('$kApiBaseUrl?action=delete_account'),
+            headers: _apiHeaders(withAuth: true),
+            body: jsonEncode({'password': password}),
+          )
+          .timeout(const Duration(seconds: 20));
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && data['ok'] == true) {
+        await _clearAuthSession();
+        return null;
+      }
+      return (data['error'] ?? 'অ্যাকাউন্ট ডিলিট করা যায়নি').toString();
+    } on SocketException {
+      return 'ইন্টারনেট সংযোগ নেই!';
+    } catch (e) {
+      return 'ত্রুটি: $e';
+    }
+  }
+
+  Future<String?> sendFeedback(String message, {String? guestName}) async {
+    try {
+      final res = await http
+          .post(
+            Uri.parse('$kApiBaseUrl?action=feedback'),
+            headers: _apiHeaders(withAuth: isLoggedIn),
+            body: jsonEncode({
+              'message': message,
+              'name': guestName ?? userName ?? 'Guest',
+              'email': userEmail ?? '',
+            }),
+          )
+          .timeout(const Duration(seconds: 20));
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && data['ok'] == true) return null;
+      return (data['error'] ?? 'পাঠানো যায়নি').toString();
+    } on SocketException {
+      return 'ইন্টারনেট সংযোগ নেই!';
+    } catch (e) {
+      return 'ত্রুটি: $e';
+    }
   }
 
   @override
@@ -265,7 +534,7 @@ Uint8List prepareOcrImageTopLevel(Uint8List bytes) {
 }
 
 // ============================================================================
-// TEXT STYLE, GLITCH & NICKNAME ENGINES
+// TEXT STYLE, GLITCH, NICKNAME, EMOJI ART & SUMMARY ENGINES
 // ============================================================================
 
 class StyledResult {
@@ -495,10 +764,6 @@ class SymbolData {
   ];
 }
 
-// ============================================================================
-// NEW FEATURE 1: EMOJI ART ENGINE
-// ============================================================================
-
 class EmojiArtEngine {
   static const Map<String, List<String>> _glyphs = {
     'A': ['01110', '10001', '11111', '10001', '10001'],
@@ -590,10 +855,6 @@ class EmojiArtEngine {
   }
 }
 
-// ============================================================================
-// NEW FEATURE 2: OFFLINE STUDY PARAGRAPH SUMMARIZER (ENGLISH + BANGLA)
-// ============================================================================
-
 class SummaryResult {
   final String summaryText;
   final int originalWords;
@@ -618,14 +879,12 @@ class SummaryResult {
 
 class ParagraphSummaryEngine {
   static const Set<String> _stopWords = {
-    // English stopwords
     'the', 'is', 'in', 'at', 'of', 'and', 'to', 'a', 'an', 'that', 'this',
     'it', 'for', 'on', 'with', 'as', 'was', 'were', 'are', 'be', 'by', 'or',
     'from', 'they', 'we', 'you', 'he', 'she', 'his', 'her', 'their', 'our',
     'which', 'who', 'what', 'when', 'where', 'how', 'can', 'will', 'has',
     'have', 'had', 'not', 'but', 'also', 'into', 'than', 'then', 'very',
     'more', 'most', 'some', 'such', 'these', 'those', 'been', 'being',
-    // Bengali stopwords
     'এবং', 'ও', 'আর', 'কিন্তু', 'তবে', 'কারণ', 'যে', 'যা', 'এই', 'সেই',
     'একটি', 'কোনো', 'কোন', 'থেকে', 'দিয়ে', 'দিয়ে', 'করে', 'করা', 'হয়', 'হয়',
     'হয়ে', 'হয়ে', 'হয়েছে', 'হয়েছে', 'ছিল', 'আছে', 'না', 'নয়', 'নয়', 'কি',
@@ -712,10 +971,9 @@ class ParagraphSummaryEngine {
       }
       if (RegExp(r'\d').hasMatch(sentences[i])) sScore += 2.0;
 
-      // Normalize softly by sentence length
       double normalized = sScore / sqrt(words.length + 1);
-      if (i == 0) normalized *= 1.25; // Topic sentence boost
-      if (i == sentences.length - 1) normalized *= 1.1; // Conclusion boost
+      if (i == 0) normalized *= 1.25;
+      if (i == sentences.length - 1) normalized *= 1.1;
       scores[i] = normalized;
     }
 
