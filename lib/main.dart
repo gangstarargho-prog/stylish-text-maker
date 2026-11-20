@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'cloud_screen.dart';
 import 'engines.dart';
 import 'extra_screens.dart';
 import 'image_screens.dart';
@@ -86,6 +87,18 @@ class MainShellScreen extends StatelessWidget {
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
             actions: [
+              IconButton(
+                tooltip: app.isLoggedIn ? 'Cloud Account' : 'Login / Sync',
+                icon: Icon(
+                  app.isLoggedIn ? Icons.cloud_done : Icons.account_circle_outlined,
+                  color: app.isLoggedIn ? Colors.green : null,
+                ),
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => CloudAccountScreen(app: app)),
+                  );
+                },
+              ),
               IconButton(
                 tooltip: app.isDarkMode ? 'Light Mode' : 'Dark Mode',
                 icon: Icon(app.isDarkMode ? Icons.light_mode : Icons.dark_mode),
@@ -204,6 +217,24 @@ class DashboardHomeTab extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (app.serverNotice != null && !app.noticeDismissed) ...[
+            Card(
+              color: cs.secondaryContainer,
+              margin: const EdgeInsets.only(bottom: 12),
+              child: ListTile(
+                leading: const Icon(Icons.campaign_outlined),
+                title: Text(
+                  app.serverNotice!.title,
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+                subtitle: Text(app.serverNotice!.message, style: const TextStyle(fontSize: 12.5)),
+                trailing: IconButton(
+                  icon: const Icon(Icons.close, size: 18),
+                  onPressed: app.dismissNotice,
+                ),
+              ),
+            ),
+          ],
           Container(
             padding: const EdgeInsets.all(18),
             decoration: BoxDecoration(
@@ -234,7 +265,7 @@ class DashboardHomeTab extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'স্টাইলিশ ফন্ট, ইমোজি আর্ট, স্টাডি সামারি, বাংলা OCR, WebP কনভার্টার ও YT থাম্বনেইল এখন এক অ্যাপে!',
+                  'স্টাইলিশ ফন্ট, ইমোজি আর্ট, স্টাডি সামারি, বাংলা OCR, WebP কনভার্টার ও ক্লাউড সিঙ্ক এখন এক অ্যাপে!',
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.90),
                     fontSize: 13,
@@ -340,8 +371,67 @@ class DashboardHomeTab extends StatelessWidget {
               onTap: () => _open(context, const YoutubeThumbnailScreen()),
             ),
           ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: Card(
+                  elevation: 0.6,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(16),
+                    onTap: () => _open(context, CloudAccountScreen(app: app)),
+                    child: Padding(
+                      padding: const EdgeInsets.all(14),
+                      child: Row(
+                        children: [
+                          Icon(
+                            app.isLoggedIn ? Icons.cloud_done : Icons.cloud_sync_outlined,
+                            color: app.isLoggedIn ? Colors.green : cs.primary,
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              app.isLoggedIn ? 'Cloud Synced' : 'Cloud Login',
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Card(
+                  elevation: 0.6,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(16),
+                    onTap: () => _open(context, FeedbackScreen(app: app)),
+                    child: Padding(
+                      padding: const EdgeInsets.all(14),
+                      child: Row(
+                        children: [
+                          Icon(Icons.feedback_outlined, color: cs.tertiary),
+                          const SizedBox(width: 10),
+                          const Expanded(
+                            child: Text(
+                              'Feedback',
+                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
           if (app.history.isNotEmpty) ...[
-            const SizedBox(height: 20),
+            const SizedBox(height: 18),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -489,14 +579,8 @@ class SettingsTab extends StatelessWidget {
   final AppController app;
   const SettingsTab({super.key, required this.app});
 
-  Future<void> _openWebsite(BuildContext context) async {
-    if (kWebsiteUrl.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('ওয়েবসাইট লিংক খুব শীঘ্রই যুক্ত করা হবে!')),
-      );
-      return;
-    }
-    final uri = Uri.parse(kWebsiteUrl.trim());
+  Future<void> _openUrl(BuildContext context, String urlStr) async {
+    final uri = Uri.parse(urlStr.trim());
     if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -512,11 +596,15 @@ class SettingsTab extends StatelessWidget {
       builder: (_) => AlertDialog(
         title: const Text('Privacy & Data Safety'),
         content: const Text(
-          '• Stylish Text, Emoji Art, Study Summary, English OCR এবং Image Resize আপনার ফোনের ভেতরেই (Offline) কাজ করে।\n\n'
-          '• আপনার Favorites ও Copy History কেবল আপনার ফোনের লোকাল স্টোরেজে নিরাপদ থাকে—কোনো সার্ভারে পাঠানো হয় না।\n\n'
-          '• Camera ও Gallery পারমিশন শুধুমাত্র আপনি যখন ছবি বাছাই বা স্ক্যান করেন তখনই ব্যবহার করা হয়।',
+          '• অফলাইন টুলস (Stylish Text, Emoji Art, Summary, English OCR, Image Resize) আপনার ফোনের ভেতরেই কাজ করে।\n\n'
+          '• আপনি যদি স্বেচ্ছায় Cloud Account খোলেন, তবে আপনার নাম, ইমেইল ও সিঙ্ক করা Favorites/History এনক্রিপ্টেড অবস্থায় আমাদের সার্ভারে (tools-web.qevano.site) সেভ থাকে।\n\n'
+          '• আপনি যেকোনো সময় অ্যাপের ভেতর থেকে অথবা ওয়েবসাইট থেকে অ্যাকাউন্ট স্থায়ীভাবে ডিলিট করতে পারবেন।',
         ),
         actions: [
+          TextButton(
+            onPressed: () => _openUrl(context, kPrivacyUrl),
+            child: const Text('Online Policy'),
+          ),
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: const Text('ঠিক আছে'),
@@ -586,6 +674,23 @@ class SettingsTab extends StatelessWidget {
           elevation: 0.5,
           child: Column(
             children: [
+              ListTile(
+                leading: Icon(
+                  app.isLoggedIn ? Icons.cloud_done : Icons.cloud_sync_outlined,
+                  color: app.isLoggedIn ? Colors.green : null,
+                ),
+                title: Text(app.isLoggedIn ? (app.userName ?? 'Cloud Account') : 'Cloud Account & Sync'),
+                subtitle: Text(
+                  app.isLoggedIn ? (app.userEmail ?? 'Connected') : 'Favorites ও History ক্লাউডে সেভ করুন',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => CloudAccountScreen(app: app)),
+                  );
+                },
+              ),
+              const Divider(height: 1),
               SwitchListTile(
                 secondary: const Icon(Icons.dark_mode_outlined),
                 title: const Text('Dark Mode'),
@@ -595,27 +700,37 @@ class SettingsTab extends StatelessWidget {
               ),
               const Divider(height: 1),
               ListTile(
+                leading: const Icon(Icons.feedback_outlined),
+                title: const Text('Send Feedback'),
+                subtitle: const Text('মতামত বা নতুন ফিচারের অনুরোধ পাঠান'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => FeedbackScreen(app: app)),
+                  );
+                },
+              ),
+              const Divider(height: 1),
+              ListTile(
                 leading: const Icon(Icons.shield_outlined),
                 title: const Text('Privacy & Data Safety'),
-                subtitle: const Text('অ্যাপের নিরাপত্তা ও তথ্যের সুরক্ষা নীতি'),
+                subtitle: const Text('অ্যাপের নিরাপত্তা ও প্রাইভেসি পলিসি'),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => _showPrivacyDialog(context),
               ),
               const Divider(height: 1),
               ListTile(
                 leading: const Icon(Icons.language),
-                title: const Text('More Online Tools (Website)'),
-                subtitle: Text(
-                  kWebsiteUrl.isEmpty ? 'ওয়েবসাইট লিংক শীঘ্রই আসছে' : kWebsiteUrl,
-                ),
+                title: const Text('Official App Website'),
+                subtitle: const Text(kWebsiteUrl),
                 trailing: const Icon(Icons.open_in_new),
-                onTap: () => _openWebsite(context),
+                onTap: () => _openUrl(context, kWebsiteUrl),
               ),
               const Divider(height: 1),
               const ListTile(
                 leading: Icon(Icons.verified_outlined),
                 title: Text(kAppName),
-                subtitle: Text('Pro Studio Edition • Version 2.3 (Secured)'),
+                subtitle: Text('Pro Studio Edition • Version 2.4 (Cloud Connected)'),
               ),
             ],
           ),
