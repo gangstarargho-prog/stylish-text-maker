@@ -8,7 +8,7 @@ on:
       mode:
         description: 'কী করতে চান?'
         required: true
-        default: 'patch'
+        default: 'release_apk'
         type: choice
         options:
           - patch
@@ -50,12 +50,9 @@ jobs:
           cp -r lib /tmp/custom_backup/lib
           if [ -f shorebird.yaml ]; then
             cp shorebird.yaml /tmp/custom_backup/shorebird.yaml
-            echo "FIRST_RUN=false" >> $GITHUB_ENV
-          else
-            echo "FIRST_RUN=true" >> $GITHUB_ENV
           fi
 
-          flutter create . --project-name stylish_text_maker --org com.stylishtextmaker.app --platforms android
+          flutter create . --project-name stylish_text_maker --org com.arghodev --platforms android
           cp /tmp/custom_backup/pubspec.yaml pubspec.yaml
           rm -rf lib
           cp -r /tmp/custom_backup/lib lib
@@ -65,13 +62,26 @@ jobs:
           else
             printf "\n" | shorebird init --force
             cp /tmp/custom_backup/pubspec.yaml pubspec.yaml
-            echo "=== GENERATED SHOREBIRD.YAML ==="
-            cat shorebird.yaml
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add shorebird.yaml
-            git commit -m "Add shorebird.yaml [skip ci]" || true
-            git push || true
+          fi
+
+      - name: Configure Release Keystore Signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > android/app/release-key.jks
+            cat << EOF > android/key.properties
+          storePassword=$KEYSTORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          storeFile=release-key.jks
+          EOF
+            echo "HAS_KEYSTORE=true" >> $GITHUB_ENV
+          else
+            echo "HAS_KEYSTORE=false" >> $GITHUB_ENV
           fi
 
       - name: Configure AndroidManifest, Security, minSdk, Lint, and Gradle
@@ -114,11 +124,27 @@ jobs:
           with open(manifest_path, "w") as f:
               f.write(m)
 
+          has_ks = os.environ.get("HAS_KEYSTORE") == "true"
+
           kts_path = "android/app/build.gradle.kts"
           if os.path.exists(kts_path):
               with open(kts_path, "r") as f:
                   g = f.read()
               g = g.replace("minSdk = flutter.minSdkVersion", "minSdk = 24")
+              g = g.replace('applicationId = "com.arghodev.stylish_text_maker"', 'applicationId = "com.arghodev.stylishtextmaker"')
+
+              if has_ks and "key.properties" not in g:
+                  props_header = (
+                      'import java.util.Properties\n'
+                      'import java.io.FileInputStream\n\n'
+                      'val keystoreProperties = Properties()\n'
+                      'val keystorePropertiesFile = rootProject.file("key.properties")\n'
+                      'if (keystorePropertiesFile.exists()) {\n'
+                      '    keystoreProperties.load(FileInputStream(keystorePropertiesFile))\n'
+                      '}\n\n'
+                  )
+                  g = props_header + g
+
               if "checkReleaseBuilds" not in g:
                   g = re.sub(
                       r'^android\s*\{',
@@ -127,9 +153,25 @@ jobs:
                       count=1,
                       flags=re.MULTILINE,
                   )
+
+              if has_ks and 'signingConfigs.create("release")' not in g:
+                  signing_block = (
+                      '    signingConfigs {\n'
+                      '        create("release") {\n'
+                      '            keyAlias = keystoreProperties.getProperty("keyAlias")\n'
+                      '            keyPassword = keystoreProperties.getProperty("keyPassword")\n'
+                      '            storeFile = file(keystoreProperties.getProperty("storeFile"))\n'
+                      '            storePassword = keystoreProperties.getProperty("storePassword")\n'
+                      '        }\n'
+                      '    }\n'
+                      '    buildTypes {'
+                  )
+                  g = g.replace("    buildTypes {", signing_block, 1)
+
               if "isMinifyEnabled" not in g:
+                  sign_ref = 'signingConfigs.getByName("release")' if has_ks else 'signingConfigs.getByName("debug")'
                   extra = (
-                      'signingConfig = signingConfigs.getByName("debug")\n'
+                      f'signingConfig = {sign_ref}\n'
                       '            isMinifyEnabled = false\n'
                       '            isShrinkResources = false\n'
                       '            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")'
@@ -138,31 +180,8 @@ jobs:
                       g = g.replace('signingConfig = signingConfigs.getByName("debug")', extra, 1)
                   else:
                       g = g.replace("release {", "release {\n            " + extra, 1)
-              with open(kts_path, "w") as f:
-                  f.write(g)
 
-          groovy_path = "android/app/build.gradle"
-          if os.path.exists(groovy_path):
-              with open(groovy_path, "r") as f:
-                  g = f.read()
-              g = g.replace("minSdkVersion flutter.minSdkVersion", "minSdkVersion 24")
-              if "checkReleaseBuilds" not in g:
-                  g = re.sub(
-                      r'^android\s*\{',
-                      'android {\n    lintOptions {\n        checkReleaseBuilds false\n        abortOnError false\n    }',
-                      g,
-                      count=1,
-                      flags=re.MULTILINE,
-                  )
-              if "minifyEnabled" not in g:
-                  extra_g = (
-                      "release {\n"
-                      "            minifyEnabled false\n"
-                      "            shrinkResources false\n"
-                      "            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'"
-                  )
-                  g = g.replace("release {", extra_g, 1)
-              with open(groovy_path, "w") as f:
+              with open(kts_path, "w") as f:
                   f.write(g)
           EOF
 
@@ -170,7 +189,7 @@ jobs:
         run: flutter pub get
 
       - name: Run Shorebird Release APK
-        if: env.FIRST_RUN == 'true' || github.event.inputs.mode == 'release_apk'
+        if: github.event.inputs.mode == 'release_apk' || github.event_name == 'push'
         run: shorebird release android --artifact apk --no-confirm
 
       - name: Run Shorebird Release AAB
@@ -178,13 +197,13 @@ jobs:
         run: shorebird release android --artifact aab --no-confirm
 
       - name: Run Shorebird Auto-Update Patch
-        if: env.FIRST_RUN != 'true' && github.event.inputs.mode != 'release_apk' && github.event.inputs.mode != 'release_aab'
+        if: github.event.inputs.mode == 'patch'
         run: |
           RELEASE_VER=$(grep '^version:' pubspec.yaml | awk '{print $2}')
           shorebird patch android --release-version="$RELEASE_VER" --allow-native-diffs --allow-asset-diffs --no-confirm
 
       - name: Upload Shorebird APK
-        if: env.FIRST_RUN == 'true' || github.event.inputs.mode == 'release_apk'
+        if: github.event.inputs.mode == 'release_apk' || github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
           name: shorebird-release-apk
