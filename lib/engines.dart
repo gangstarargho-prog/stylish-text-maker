@@ -5,6 +5,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
 import 'package:share_plus/share_plus.dart';
@@ -16,6 +17,8 @@ const String kPrivacyUrl = 'https://tools-web.qevano.site/privacy.html';
 const String kApiBaseUrl = 'https://tools-web.qevano.site/api/index.php';
 const String kBackendApiKey = 'STM_Qevano_2026_SecureKey_9482';
 const String kOcrSpaceApiKey = 'K8258483675268988957';
+const String kGoogleWebClientId =
+    '857935299580-m35iprui201n140rdnmf7mmdutlgr4id.apps.googleusercontent.com';
 
 class ThemeOption {
   final String name;
@@ -42,10 +45,6 @@ class CloudNotice {
   });
 }
 
-// ============================================================================
-// APP CONTROLLER (LOCAL + CLOUD SYNC STATE)
-// ============================================================================
-
 class AppController extends ChangeNotifier {
   final SharedPreferencesAsync _prefs = SharedPreferencesAsync();
 
@@ -59,8 +58,10 @@ class AppController extends ChangeNotifier {
   String? authToken;
   String? userName;
   String? userEmail;
+  bool isGoogleUser = false;
   CloudNotice? serverNotice;
   bool noticeDismissed = false;
+  bool _googleInitialized = false;
 
   bool get isLoggedIn => authToken != null && authToken!.isNotEmpty;
   Color get seedColor => kThemeOptions[themeIndex.clamp(0, kThemeOptions.length - 1)].color;
@@ -68,7 +69,7 @@ class AppController extends ChangeNotifier {
   Map<String, String> _apiHeaders({bool withAuth = false}) => {
         'Content-Type': 'application/json; charset=utf-8',
         'Accept': 'application/json',
-        'User-Agent': 'StylishTextMakerApp/2.4',
+        'User-Agent': 'StylishTextMakerApp/2.5',
         'X-App-Key': kBackendApiKey,
         if (withAuth && authToken != null) 'X-Auth-Token': authToken!,
       };
@@ -81,6 +82,7 @@ class AppController extends ChangeNotifier {
     authToken = await _prefs.getString('auth_token');
     userName = await _prefs.getString('user_name');
     userEmail = await _prefs.getString('user_email');
+    isGoogleUser = await _prefs.getBool('is_google_user') ?? false;
     notifyListeners();
     fetchNotice();
   }
@@ -151,8 +153,6 @@ class AppController extends ChangeNotifier {
     if (isLoggedIn) syncPush();
   }
 
-  // ---------------- CLOUD API METHODS ----------------
-
   Future<void> fetchNotice() async {
     try {
       final res = await http
@@ -173,13 +173,15 @@ class AppController extends ChangeNotifier {
     } catch (_) {}
   }
 
-  Future<void> _saveAuthSession(String token, String name, String email) async {
+  Future<void> _saveAuthSession(String token, String name, String email, {bool google = false}) async {
     authToken = token;
     userName = name;
     userEmail = email;
+    isGoogleUser = google;
     await _prefs.setString('auth_token', token);
     await _prefs.setString('user_name', name);
     await _prefs.setString('user_email', email);
+    await _prefs.setBool('is_google_user', google);
     notifyListeners();
   }
 
@@ -187,9 +189,11 @@ class AppController extends ChangeNotifier {
     authToken = null;
     userName = null;
     userEmail = null;
+    isGoogleUser = false;
     await _prefs.remove('auth_token');
     await _prefs.remove('user_name');
     await _prefs.remove('user_email');
+    await _prefs.remove('is_google_user');
     notifyListeners();
   }
 
@@ -227,6 +231,7 @@ class AppController extends ChangeNotifier {
           data['token'].toString(),
           u['name'].toString(),
           u['email'].toString(),
+          google: false,
         );
         await syncPush();
         return null;
@@ -255,6 +260,7 @@ class AppController extends ChangeNotifier {
           data['token'].toString(),
           u['name'].toString(),
           u['email'].toString(),
+          google: false,
         );
         await _mergeCloudLists(
           (data['favorites'] as List<dynamic>?) ?? [],
@@ -270,8 +276,59 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<String?> loginWithGoogle() async {
+    try {
+      if (!_googleInitialized) {
+        await GoogleSignIn.instance.initialize(serverClientId: kGoogleWebClientId);
+        _googleInitialized = true;
+      }
+      final account = await GoogleSignIn.instance.authenticate();
+      final idToken = account.authentication.idToken;
+      if (idToken == null || idToken.isEmpty) {
+        return 'Google থেকে ভেরিফিকেশন টোকেন পাওয়া যায়নি।';
+      }
+
+      final res = await http
+          .post(
+            Uri.parse('$kApiBaseUrl?action=google_login'),
+            headers: _apiHeaders(),
+            body: jsonEncode({'id_token': idToken}),
+          )
+          .timeout(const Duration(seconds: 20));
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && data['ok'] == true) {
+        final u = data['user'] as Map<String, dynamic>;
+        await _saveAuthSession(
+          data['token'].toString(),
+          u['name'].toString(),
+          u['email'].toString(),
+          google: true,
+        );
+        await _mergeCloudLists(
+          (data['favorites'] as List<dynamic>?) ?? [],
+          (data['history'] as List<dynamic>?) ?? [],
+        );
+        await syncPush();
+        return null;
+      }
+      return (data['error'] ?? 'Google লগইন ব্যর্থ হয়েছে (${res.statusCode})').toString();
+    } on GoogleSignInException catch (e) {
+      if (e.code == GoogleSignInExceptionCode.canceled) {
+        return 'লগইন বাতিল করা হয়েছে।';
+      }
+      return 'Google Sign-In ত্রুটি: ${e.description ?? e.code.name}';
+    } on SocketException {
+      return 'ইন্টারনেট সংযোগ নেই!';
+    } catch (e) {
+      return 'Google লগইন সমস্যা: $e';
+    }
+  }
+
   Future<void> logoutAccount() async {
     try {
+      if (isGoogleUser && _googleInitialized) {
+        await GoogleSignIn.instance.signOut();
+      }
       if (isLoggedIn) {
         await http
             .post(
@@ -331,14 +388,14 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  Future<String?> deleteAccount(String password) async {
+  Future<String?> deleteAccount({String password = '', String confirmText = ''}) async {
     if (!isLoggedIn) return 'লগইন করা নেই।';
     try {
       final res = await http
           .post(
             Uri.parse('$kApiBaseUrl?action=delete_account'),
             headers: _apiHeaders(withAuth: true),
-            body: jsonEncode({'password': password}),
+            body: jsonEncode({'password': password, 'confirm_text': confirmText}),
           )
           .timeout(const Duration(seconds: 20));
       final data = jsonDecode(res.body) as Map<String, dynamic>;
@@ -406,10 +463,6 @@ void copyAndRecord(
 Future<void> shareText(String text) async {
   await SharePlus.instance.share(ShareParams(text: text));
 }
-
-// ============================================================================
-// TOP-LEVEL IMAGE ISOLATE FUNCTIONS
-// ============================================================================
 
 class ResizeRequest {
   final Uint8List bytes;
@@ -532,10 +585,6 @@ Uint8List prepareOcrImageTopLevel(Uint8List bytes) {
   }
   return jpg;
 }
-
-// ============================================================================
-// TEXT STYLE, GLITCH, NICKNAME, EMOJI ART & SUMMARY ENGINES
-// ============================================================================
 
 class StyledResult {
   final String name;
