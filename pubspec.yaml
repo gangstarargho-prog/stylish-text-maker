@@ -1,7 +1,7 @@
 name: stylish_text_maker
 description: Stylish Text, Symbols, Image to Text, Image Resizer & YT Thumbnail App.
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.0.1+2
 
 environment:
   sdk: '>=3.10.0 <4.0.0'
@@ -10,6 +10,7 @@ dependencies:
   flutter:
     sdk: flutter
   google_mlkit_text_recognition: ^1.0.3
+  google_sign_in: ^7.2.0
   image_picker: ^1.2.4
   image: ^4.10.0
   flutter_image_compress: ^2.5.0
